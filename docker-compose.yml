@@ -1,0 +1,82 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: pos_mssql
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD:-Pos2026Clave01!}
+      MSSQL_PID: ${SA_EDITION:-Developer}
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+    ports:
+      - "${DB_PORT_HOST:-26433}:1433"
+    volumes:
+      - mssql_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  backend:
+    build: ./backend
+    container_name: pos_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mssql+pyodbc://sa:${SA_PASSWORD:-Pos2026Clave01!}@db:1433/${DB_NAME:-posdb}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      SECRET_KEY: ${SECRET_KEY:-cambiar-esta-clave-en-produccion-porfavor}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      DB_HOST: db
+      DB_PORT: 1433
+      DB_USER: sa
+      DB_PASSWORD: ${SA_PASSWORD:-Pos2026Clave01!}
+      DB_NAME: ${DB_NAME:-posdb}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+      SEED_CAJERO_PASSWORD: ${SEED_CAJERO_PASSWORD:-cajero123}
+      SEED_ADMIN_FORCE_CHANGE: ${SEED_ADMIN_FORCE_CHANGE:-1}
+      DIAN_ENVIRONMENT: ${DIAN_ENVIRONMENT:-disabled}
+      DIAN_SOFTWARE_ID: ${DIAN_SOFTWARE_ID:-}
+      DIAN_SOFTWARE_PIN: ${DIAN_SOFTWARE_PIN:-}
+      DIAN_TEST_SET_ID: ${DIAN_TEST_SET_ID:-}
+      DIAN_CERTIFICATE_PATH: ${DIAN_CERTIFICATE_PATH:-}
+      DIAN_CERTIFICATE_PASSWORD: ${DIAN_CERTIFICATE_PASSWORD:-}
+      DIAN_CLAVE_TECNICA: ${DIAN_CLAVE_TECNICA:-}
+      DIAN_PROVIDER_URL: ${DIAN_PROVIDER_URL:-}
+      DIAN_MOCK_TRANSMISSION: ${DIAN_MOCK_TRANSMISSION:-true}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_PORT:-28743}:8000"
+    volumes:
+      - pos_config:/app/datos
+
+  frontend:
+    build: ./frontend
+    container_name: pos_frontend
+    restart: unless-stopped
+    ports:
+      - "${PORT:-28742}:80"
+    depends_on:
+      - backend
+
+  # Túnel Cloudflare: expone el POS a internet SIN montar nada en la nube.
+  # Crear el túnel en Cloudflare Zero Trust -> Networks -> Tunnels (modo remotamente
+  # gestionado), copiar el token y ponerlo en CF_TUNNEL_TOKEN del archivo .env.
+  # Sin token el contenedor se detiene en silencio y el resto del stack sigue normal.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: pos_cloudflared
+    restart: "no"
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - frontend
+    networks:
+      - default
+
+volumes:
+  mssql_data:
+  pos_config:

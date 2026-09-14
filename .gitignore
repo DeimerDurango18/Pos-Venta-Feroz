@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Entorno local (secretos por cliente)
+.env
+
+# Node
+node_modules/
+
+# Build del frontend (se genera en el build de Docker)
+frontend/dist/
+
+# Logs
+*.log

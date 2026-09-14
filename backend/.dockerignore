@@ -1,0 +1,13 @@
+# Backend
+backend/app
+backend/init_db.py
+backend/entrypoint.sh
+backend/smoke_ui_batch.py
+backend/test_*.py
+backend/Dockerfile
+__pycache__/
+*.pyc
+.env
+.venv
+venv/
+.pytest_cache/
