@@ -314,12 +314,6 @@ def enviar_whatsapp(
 
 
 # ------------------ BACKUPS / RESTAURACIÓN (342) ------------------
-_TABLAS_BACKUP = [
-    "productos", "clientes", "proveedores", "ventas", "venta_detalle", "venta_pago",
-    "categorias", "marcas", "presentaciones", "compras", "cuentas_pagar", "stock",
-]
-
-
 @router.get("/backups")
 def listar_backups(db: Session = Depends(get_db)):
     return (
@@ -333,33 +327,9 @@ def listar_backups(db: Session = Depends(get_db)):
 @router.post("/backups", status_code=201)
 def crear_backup(db: Session = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
     """Vuelca las tablas núcleo a JSON y guarda el registro (base para restauración)."""
-    from sqlalchemy import text
+    from ..backup import ejecutar_backup
 
-    from app.database import engine
-
-    nombre = f"backup-{date.today().isoformat()}-{usuario.id}"
-    totales = []
-    conteo = 0
-    with engine.connect() as conn:
-        for tabla in _TABLAS_BACKUP:
-            try:
-                filas = conn.execute(text(f"SELECT * FROM {tabla}")).mappings().all()
-                totales.append({tabla: [dict(f) for f in filas]})
-                conteo += len(filas)
-            except Exception:
-                totales.append({tabla: []})
-    detalle = json.dumps(totales, default=str, ensure_ascii=False)
-    b = BackupRegistro(
-        nombre=nombre,
-        tabla=f"backup completo ({len(_TABLAS_BACKUP)} tablas)",
-        tipo="manual",
-        tamano=len(detalle.encode("utf-8")),
-        detalle=detalle,
-    )
-    db.add(b)
-    db.commit()
-    db.refresh(b)
-    return {"id": b.id, "nombre": b.nombre, "tablas": len(_TABLAS_BACKUP), "registros": conteo, "tamano": b.tamano}
+    return ejecutar_backup(db, tipo="manual")
 
 
 @router.post("/backups/{backup_id}/restaurar")

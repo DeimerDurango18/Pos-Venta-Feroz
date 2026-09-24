@@ -37,6 +37,7 @@ from app.models import (  # noqa: E402
     AuditoriaLog,
     Caja,
     Cliente,
+    Configuracion,
     DocumentoFiscal,
     MovimientoCaja,
     Producto,
@@ -220,6 +221,20 @@ r = C.get("/reportes/ventas-por-cajero")
 check("reporte ventas por cajero", r.status_code == 200 and r.json() and r.json()[0]["ventas"] >= 1, str(r.status_code) + str(r.json())[:120])
 r = C.get("/reportes/ventas-por-turno")
 check("reporte ventas por turno", r.status_code == 200 and any(x["apertura_id"] == T1 and x["total"] == 35000 for x in r.json()), str([x for x in r.json() if x.get("apertura_id") == T1]))
+
+# ---- Cierre del turno + cierre por correo ----
+with SessionLocal() as db:
+    conf = db.query(Configuracion).filter(Configuracion.clave == "pos.cierres_correo").first()
+    if conf:
+        conf.valor = ""
+        db.commit()
+r = C.post(f"/caja/{T1}/cierre")
+check("cerrar turno caja 1", r.status_code == 200 and r.json()["estado"] == "cerrada", str(r.status_code) + str(r.json()))
+check("cierro con saldo calculado", float(r.json().get("saldo_cierre") or 0) == 50000 + 35000 - 15000, str(r.json()))
+check("respuesta incluye estado correo", "correo" in r.json(), str(r.json()))
+check("sin destinatarios = error claro", r.json()["correo"].get("error") == "sin destinatarios", str(r.json().get("correo")))
+r = C.post(f"/caja/{T1}/cierre")
+check("cierre repetido rechazado", r.status_code == 400, str(r.status_code) + str(r.text))
 
 print(f"\n========== MODULO CAJA/TURNOS: {len(OKS)} OK · {len(FALLOS)} FALLO ==========")
 sys.exit(1 if FALLOS else 0)

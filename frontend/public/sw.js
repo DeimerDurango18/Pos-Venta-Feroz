@@ -1,4 +1,4 @@
-const VERSION = "pos-v1";
+const VERSION = "pos-v5";
 const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icono-192.png", "/icono-512.png"];
 
 self.addEventListener("install", (e) => {

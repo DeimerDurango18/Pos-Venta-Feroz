@@ -6,11 +6,16 @@ from ..database import get_db
 from ..deps import get_current_user
 from ..models import Configuracion, Empresa, Establecimiento, Impuesto, ModeloNegocio, Usuario
 from ..plan import (
+    PLANES,
     TIPOS_NEGOCIO,
     calcular_modulos,
+    catalogo_planes,
+    estado_suscripcion,
     guardar_licencia,
     leer_licencia,
+    leer_suscripcion,
     modelo_negocio_de_empresa,
+    sugerir_plan,
 )
 from ..schemas.configuracion import (
     ConfiguracionCreate,
@@ -118,8 +123,17 @@ class CorreoConfig(BaseModel):
     servidor: str = ""
     puerto: int = 587
     usuario: str = ""
+    password: str = ""
     desde: str = ""
+    url_publica: str = ""
     tls: bool = True
+
+
+def _leer_correo(db):
+    """Devuelve el bloque correo sin exponer la contraseña."""
+    cfg = _leer_bloque(db, "pos.correo") or {}
+    cfg["password"] = ""
+    return cfg
 
 
 @router.get("/dispositivos")
@@ -130,7 +144,7 @@ def obtener_dispositivos(db: Session = Depends(get_db)):
         "lector": _leer_bloque(db, "pos.lector"),
         "terminal": _leer_bloque(db, "pos.terminal"),
         "cajon": _leer_bloque(db, "pos.cajon"),
-        "correo": _leer_bloque(db, "pos.correo"),
+        "correo": _leer_correo(db),
     }
 
 
@@ -166,8 +180,12 @@ def guardar_cajon(data: CajonConfig, db: Session = Depends(get_db)):
 
 @router.put("/dispositivos/correo")
 def guardar_correo(data: CorreoConfig, db: Session = Depends(get_db)):
-    _guardar_bloque(db, "pos.correo", data.model_dump())
-    return _leer_bloque(db, "pos.correo")
+    datos = data.model_dump()
+    actual = _leer_bloque(db, "pos.correo") or {}
+    if not datos.get("password"):
+        datos["password"] = actual.get("password", "")
+    _guardar_bloque(db, "pos.correo", datos)
+    return _leer_correo(db)
 
 
 # ---------- Establecimiento / negocio por NIT ----------
@@ -261,17 +279,53 @@ def obtener_plan(
         raise HTTPException(404, "No hay empresas configuradas")
     lic = leer_licencia(db)
     modelo = modelo_negocio_de_empresa(empresa, db)
+    habilitados = set(calcular_modulos(empresa, db))
+    sus = estado_suscripcion(db)
     return {
         "nit": empresa.nit,
         "tipo_negocio": empresa.tipo_negocio or "general",
         "tipos_disponibles": TIPOS_NEGOCIO,
-        "modulos": calcular_modulos(empresa, db),
+        "modulos": sorted(habilitados),
         "modelo": modelo.id if modelo else None,
         "cliente": lic.get("cliente", ""),
         "vence": lic.get("vence", ""),
         "modulos_extra": lic.get("modulos_extra", []),
         "modulos_ocultos": lic.get("modulos_ocultos", []),
+        "suscripcion": sus,
+        "plan_sugerido": sugerir_plan(habilitados),
+        "planes": catalogo_planes(),
     }
+
+
+class SuscripcionUpdate(BaseModel):
+    plan: str
+    vence: str | None = None
+
+
+@router.put("/plan")
+def actualizar_suscripcion(
+    data: SuscripcionUpdate,
+    usuario: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not (usuario.es_admin or (usuario.rol and usuario.rol.nombre.lower() == "admin")):
+        raise HTTPException(403, "Solo un administrador puede cambiar el plan")
+    if data.plan not in PLANES:
+        raise HTTPException(400, f"Plan desconocido: {data.plan}")
+    sus = leer_suscripcion(db)
+    sus["plan"] = data.plan
+    if data.vence:
+        sus["vence"] = data.vence
+    conf = db.query(Configuracion).filter(Configuracion.clave == "suscripcion").first()
+    texto = _json.dumps(sus, ensure_ascii=False)
+    if conf:
+        conf.valor = texto
+    else:
+        conf = Configuracion(clave="suscripcion", valor=texto, descripcion="Plan de suscripción del negocio")
+        db.add(conf)
+    db.commit()
+    db.refresh(conf)
+    return estado_suscripcion(db)
 
 
 # ---------- Conexión a la base de datos (solo administrador) ----------

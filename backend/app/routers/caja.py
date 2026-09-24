@@ -3,6 +3,8 @@ from fastapi.responses import HTMLResponse
 from html import escape
 from sqlalchemy.orm import Session
 
+from ..correo import enviar_correo
+
 from ..database import get_db
 from ..deps import get_current_user, require_permiso
 from ..models import (
@@ -10,6 +12,7 @@ from ..models import (
     ArqueoCaja,
     AuditoriaLog,
     Caja,
+    Configuracion,
     Empresa,
     Gasto,
     MovimientoCaja,
@@ -32,6 +35,16 @@ from ..schemas.ventas import (
 )
 
 router = APIRouter(prefix="/caja", tags=["caja"])
+
+
+def _ventas_turno(db, apertura, solo_completadas=True):
+    """Ventas de la caja dentro del turno de la apertura (ventana por tiempo)."""
+    q = db.query(Venta).filter(Venta.caja_id == apertura.caja_id)
+    if solo_completadas:
+        q = q.filter(Venta.estado == "completada")
+    if apertura.created_at:
+        q = q.filter(Venta.created_at >= apertura.created_at)
+    return q.all()
 
 
 @router.post("/apertura", response_model=AperturaCajaOut, status_code=201)
@@ -61,7 +74,7 @@ def abrir_caja(
     return apertura
 
 
-@router.post("/{apertura_id}/cierre", response_model=AperturaCajaOut)
+@router.post("/{apertura_id}/cierre")
 def cerrar_caja(apertura_id: int, db: Session = Depends(get_db)):
     apertura = db.get(AperturaCaja, apertura_id)
     if not apertura:
@@ -69,9 +82,7 @@ def cerrar_caja(apertura_id: int, db: Session = Depends(get_db)):
     if apertura.estado != "abierta":
         raise HTTPException(400, "La caja ya está cerrada")
 
-    ventas = (
-        db.query(Venta).filter(Venta.caja_id == apertura.caja_id, Venta.estado == "completada").all()
-    )
+    ventas = _ventas_turno(db, apertura)
     ingreso_ventas = sum(float(v.total) for v in ventas)
     movimientos = (
         db.query(MovimientoCaja).filter(MovimientoCaja.apertura_caja_id == apertura.id).all()
@@ -79,12 +90,95 @@ def cerrar_caja(apertura_id: int, db: Session = Depends(get_db)):
     saldo_movs = sum(float(m.monto) for m in movimientos if m.tipo in ("ingreso",))
     saldo_movs -= sum(float(m.monto) for m in movimientos if m.tipo in ("egreso", "gasto", "retiro"))
 
+    por_medio: dict[str, float] = {}
+    for v in ventas:
+        for p in db.query(VentaPago).filter(VentaPago.venta_id == v.id).all():
+            med = (p.medio or "otro").capitalize()
+            por_medio[med] = por_medio.get(med, 0) + float(p.monto or 0)
+
     saldo_cierre = float(apertura.saldo_inicial or 0) + ingreso_ventas + saldo_movs
     apertura.saldo_cierre = saldo_cierre
     apertura.estado = "cerrada"
     db.commit()
     db.refresh(apertura)
-    return apertura
+
+    caja = db.get(Caja, apertura.caja_id)
+    cajero = db.get(Usuario, apertura.usuario_id)
+    empresa = db.get(Empresa, cajero.empresa_id) if cajero else None
+    razon = (empresa.razon_social or empresa.nombre or "Empresa") if empresa else "Empresa"
+    nit = str(empresa.nit or "") if empresa else ""
+    caja_nombre = caja.nombre if caja else f"Caja {apertura.caja_id}"
+    cajero_nombre = cajero.nombre if cajero else "—"
+    fecha = str(apertura.created_at or "")[:16]
+
+    medio_html = "".join(
+        f"<tr><td>{escape(m)}</td><td style='text-align:right'>{v:,.0f}</td></tr>"
+        for m, v in sorted(por_medio.items(), key=lambda kv: -kv[1])
+    ) or "<tr><td colspan='2' style='text-align:center'>Sin ventas</td></tr>"
+    mov_html = "".join(
+        "<tr>"
+        f"<td>{escape(str(m.tipo).capitalize())}</td>"
+        f"<td>{escape(str(m.concepto or ''))}</td>"
+        f"<td style='text-align:right'>{'+' if m.tipo == 'ingreso' else '-'}{m.monto:,.0f}</td>"
+        "</tr>"
+        for m in movimientos
+    ) or "<tr><td colspan='3' style='text-align:center'>Sin movimientos</td></tr>"
+
+    vib = "🟢" if saldo_movs >= 0 else "🔴"
+    html = f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
+<style>body{{font-family:Segoe UI,Arial,sans-serif;color:#0f172a;margin:0;padding:0;background:#f1f5f9}}
+.card{{max-width:640px;margin:24px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 10px 30px rgba(15,23,42,.12);padding:24px}}
+h2{{margin:0 0 2px;font-size:20px}} .muted{{color:#64748b;font-size:12px}}
+table{{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}}
+td{{padding:7px 8px;border-bottom:1px solid #e2e8f0}} th{{text-align:left;background:#f8fafc;padding:7px 8px;border-bottom:2px solid #e2e8f0}}
+.tot td{{font-weight:700;font-size:15px;border-top:2px solid #0f172a;border-bottom:none}}
+.head{{background:linear-gradient(90deg,#4f46e5,#7c3aed);color:#fff;padding:18px 24px;margin:-24px -24px 18px}}
+.head h2{{color:#fff}} .r{{text-align:right}}</style></head><body><div class="card">
+<div class="head"><h2>✅ Cierre de caja · {escape(razon).upper()}</h2>
+<div style="opacity:.85;font-size:12px">{escape(nit)} · {escape(caja_nombre)}</div></div>
+<p class="muted">Cajero: <b>{escape(cajero_nombre)}</b> · Apertura #{apertura.id} · {escape(fecha)}</p>
+<table>
+<tr><th>Ventas del turno</th><td class="r">{len(ventas)}</td></tr>
+<tr><th>Total facturado</th><td class="r">{ingreso_ventas:,.0f}</td></tr>
+<tr><th>Saldo inicial</th><td class="r">{float(apertura.saldo_inicial or 0):,.0f}</td></tr>
+<tr class="tot"><td>Saldo de cierre {vib}</td><td class="r">{saldo_cierre:,.0f}</td></tr>
+</table>
+<table><tr><td colspan='2'><b>Ventas por medio de pago</b></td></tr>{medio_html}</table>
+<table><tr><th>Tipo</th><th>Concepto</th><th class="r">Valor</th></tr>{mov_html}</table>
+<p class="muted" style="margin-top:14px">Documento generado automáticamente por el POS al cerrar el turno.</p>
+</div></body></html>"""
+
+    correo = {"ok": False, "error": "sin destinatarios"}
+    config = db.query(Configuracion).filter(Configuracion.clave == "pos.cierres_correo").first()
+    destinos = [x.strip() for x in (config.valor or "").split(",") if x.strip()] if config else []
+    if not destinos:
+        config = db.query(Configuracion).filter(Configuracion.clave == "pos.correo").first()
+        if config and config.valor:
+            try:
+                import json as _json
+                cfg = _json.loads(config.valor) or {}
+                destinos = [x for x in cfg.get("cierres", []) if x]
+            except ValueError:
+                destinos = []
+    if destinos:
+        previos = []
+        for d in destinos:
+            r = enviar_correo(
+                db, d,
+                f"Cierre de caja #{apertura.id} · {razon}",
+                html,
+            )
+            previos.append({"destino": d, "ok": r.get("ok"), "error": r.get("error")})
+        correo = {"ok": all(p["ok"] for p in previos), "detalles": previos}
+
+    return {
+        "id": apertura.id,
+        "caja_id": apertura.caja_id,
+        "saldo_inicial": apertura.saldo_inicial,
+        "saldo_cierre": apertura.saldo_cierre,
+        "estado": apertura.estado,
+        "correo": correo,
+    }
 
 
 @router.post("/movimientos", response_model=MovimientoCajaOut, status_code=201)
@@ -136,9 +230,7 @@ def registrar_arqueo(
         datos={"efectivo_contado": efectivo_contado},
     )
 
-    ventas = (
-        db.query(Venta).filter(Venta.caja_id == apertura.caja_id).all()
-    )
+    ventas = _ventas_turno(db, apertura, solo_completadas=False)
     ingresos_venta = sum(float(v.total) for v in ventas)
     pago_efectivo = sum(
         float(p.monto) for v in ventas for p in v.pagos if p.medio == "efectivo"

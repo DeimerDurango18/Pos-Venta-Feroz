@@ -357,6 +357,19 @@ export default function Configuracion() {
     }
   }, [plan, tab]);
 
+  async function activarPlan(clave) {
+    setError("");
+    setOk("");
+    try {
+      const r = await api("/configuracion/plan", { method: "PUT", body: JSON.stringify({ plan: clave }) });
+      await recargar();
+      setOk(`Plan ${r.plan_nombre} activado`);
+      setTimeout(() => setOk(""), 2500);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   const toggleLista = (campo, mod) => {
     setLicForm((prev) => {
       const lista = prev[campo];
@@ -503,6 +516,40 @@ export default function Configuracion() {
           </div>
 
           <div className="card" style={{ marginBottom: 24 }}>
+            <h2 style={{ fontSize: 16, marginBottom: 4 }}>🎯 Metas de venta</h2>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
+              Cuánto esperas vender cada día y cada mes. El panel de control muestra el avance, los comparativos contra
+              ayer y el ranking de vendedores.
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12 }}>
+              {[
+                ["pos.meta_diaria", "Meta diaria (COP)", "500000", "number"],
+                ["pos.meta_mensual", "Meta mensual (COP)", "15000000", "number"],
+              ].map(([clave, etiqueta, ph, tipo]) => (
+                <div key={clave}>
+                  <label>{etiqueta}</label>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <input
+                      type={tipo}
+                      value={nuevoValor[clave] ?? (config.find((c) => c.clave === clave)?.valor ?? "")}
+                      onChange={(e) => setNuevoValor({ ...nuevoValor, [clave]: e.target.value })}
+                      placeholder={ph}
+                      style={{ flex: 1 }}
+                    />
+                    <button
+                      className="btn btn-secondary"
+                      onClick={() => guardarConfig(clave, etiqueta)}
+                      disabled={nuevoValor[clave] === undefined}
+                    >
+                      Guardar
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="card" style={{ marginBottom: 24 }}>
             <h2 style={{ fontSize: 16, marginBottom: 4 }}>WhatsApp y pagos digitales</h2>
             <p className="muted" style={{ fontSize: 12, marginBottom: 12 }}>
               Recibos y resumen diario por WhatsApp, alertas automáticas, menú público QR por mesa y cobro con Nequi / Daviplata.
@@ -514,10 +561,12 @@ export default function Configuracion() {
                 ["pos.reporte_diario", "Resumen diario (si/no)", "si", "text"],
                 ["pos.hora_resumen", "Hora del resumen (HH:MM)", "21:00", "text"],
                 ["pos.alertas_whatsapp", "Alertas de stock / ventas (si/no)", "si", "text"],
+                ["pos.cierres_correo", "Correos para el cierre de caja (separados por coma)", "admin@correo.com", "text"],
                 ["publico.llave", "Llave de pedidos públicos", "publico", "text"],
                 ["pos.url_publica", "URL pública del menú / kiosko", "https://ejemplo.com", "url"],
                 ["pagos.qr_nequi", "Número Nequi (QR de cobro)", "3000000000", "number"],
                 ["pagos.qr_daviplata", "Número Daviplata (QR de cobro)", "3000000000", "number"],
+                ["pagos.qr_breb", "Número Bre-B (QR de cobro)", "3000000000", "number"],
               ].map(([clave, etiqueta, ph, tipo]) => (
                 <div key={clave}>
                   <label>{etiqueta}</label>
@@ -541,7 +590,7 @@ export default function Configuracion() {
               ))}
             </div>
             <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>
-              💡 El <b>QR de cobro</b> (Nequi/Daviplata) se arma automáticamente con el número guardado y aparece en el Punto de Venta al elegir ese método. El <b>menú QR por mesa</b> usa la URL pública para que el cliente pida desde su celular.
+              💡 El <b>QR de cobro</b> (Nequi/Daviplata/Bre-B) se arma automáticamente con el número guardado y aparece en el Punto de Venta al elegir ese método. El <b>menú QR por mesa</b> usa la URL pública para que el cliente pida desde su celular.
             </p>
           </div>
 
@@ -647,11 +696,13 @@ export default function Configuracion() {
           </Tarjeta>
 
           <Tarjeta titulo="Correo (envío de facturas)" icono="📧" descripcion="SMTP usado para el envío de documentos por correo." onGuardar={() => guardarDispo("correo", dispo.correo)}>
-            <Campo etiqueta="Servidor SMTP" valor={dispo.correo.servidor} onChange={(v) => setCorreo({ servidor: v })} />
-            <Campo etiqueta="Puerto" tipo="number" valor={dispo.correo.puerto} onChange={(v) => setCorreo({ puerto: Number(v) }) } />
-            <Campo etiqueta="Usuario" valor={dispo.correo.usuario} onChange={(v) => setCorreo({ usuario: v })} />
-            <Campo etiqueta="Correo remitente" valor={dispo.correo.desde} onChange={(v) => setCorreo({ desde: v })} />
-            <Campo etiqueta="Conexión segura (TLS)" tipo="checkbox" valor={dispo.correo.tls} onChange={(v) => setCorreo({ tls: v })} />
+<Campo etiqueta="Servidor SMTP" valor={dispo.correo.servidor} onChange={(v) => setCorreo({ servidor: v })} />
+<Campo etiqueta="Puerto" tipo="number" valor={dispo.correo.puerto} onChange={(v) => setCorreo({ puerto: Number(v) }) } />
+<Campo etiqueta="Usuario" valor={dispo.correo.usuario} onChange={(v) => setCorreo({ usuario: v })} />
+<Campo etiqueta="Contraseña" tipo="password" valor={dispo.correo.password} placeholder="Dejar vacío si no cambia" onChange={(v) => setCorreo({ password: v })} />
+<Campo etiqueta="Correo remitente" valor={dispo.correo.desde} onChange={(v) => setCorreo({ desde: v })} />
+<Campo etiqueta="URL pública del sistema" valor={dispo.correo.url_publica} placeholder="https://micaja.dominio.com" onChange={(v) => setCorreo({ url_publica: v })} />
+<Campo etiqueta="Conexión segura (TLS)" tipo="checkbox" valor={dispo.correo.tls} onChange={(v) => setCorreo({ tls: v })} />
           </Tarjeta>
         </div>
       )}
@@ -814,6 +865,53 @@ export default function Configuracion() {
 
       {tab === "plan" && (
         <>
+          {plan?.suscripcion && (
+            <div className="card" style={{ marginBottom: 16, padding: "14px 16px", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+              <strong style={{ fontSize: 17 }}>Plan {plan.suscripcion.plan_nombre}</strong>
+              {plan.suscripcion.estado === "vencida" && <span className="badge" style={{ background: "#fecaca", color: "#991b1b" }}>VENCIDA</span>}
+              {plan.suscripcion.estado === "activa" && <span className="badge" style={{ background: "#bbf7d0", color: "#166534" }}>ACTIVA</span>}
+              {plan.suscripcion.estado === "prueba" && <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>PRUEBA</span>}
+              {plan.suscripcion.dias_restantes != null && (
+                <span className={`badge ${plan.suscripcion.dias_restantes < 7 ? "badge-danger" : ""}`}>Vence en {plan.suscripcion.dias_restantes} días</span>
+              )}
+              {plan.suscripcion.vence && <span className="badge">Vence: {plan.suscripcion.vence}</span>}
+              <span className="muted">Recomendado: <b>{plan.plan_sugerido}</b></span>
+            </div>
+          )}
+
+          {plan?.planes?.length > 0 && (
+            <div className="card" style={{ marginBottom: 24 }}>
+              <h2 style={{ fontSize: 16, marginBottom: 12 }}>Planes de suscripción</h2>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 12 }}>
+                {plan.planes.map((p) => {
+                  const activo = plan.suscripcion?.plan === p.clave;
+                  const recomendado = plan.plan_sugerido === p.clave && !activo;
+                  return (
+                    <div key={p.clave} className="card" style={{
+                      padding: 14,
+                      border: `1px solid ${activo ? "#0e9f74" : recomendado ? "#f59e0b" : "var(--line)"}`,
+                    }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                        <strong>{p.nombre}</strong>
+                        {activo ? <span className="badge badge-success">ACTIVO</span> : recomendado ? <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>Recomendado</span> : null}
+                      </div>
+                      <div style={{ fontSize: 20, fontWeight: 800, color: "var(--brand1)" }}>${Number(p.precio_mensual).toLocaleString("es-CO")}<span className="muted" style={{ fontSize: 12, fontWeight: 500 }}>/mes</span></div>
+                      <div className="muted" style={{ fontSize: 12, minHeight: 34, margin: "6px 0" }}>{p.descripcion}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--muted)" }}>
+                        {p.modulos.length} módulos · {p.limite_usuarios ? `${p.limite_usuarios} usuario${p.limite_usuarios > 1 ? "s" : ""}` : "usuarios ilimitados"}
+                      </div>
+                      {esAdmin && !activo && (
+                        <button className="btn btn-secondary btn-sm" style={{ width: "100%", marginTop: 10 }} onClick={() => activarPlan(p.clave)}>
+                          Activar {p.nombre}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="card" style={{ marginBottom: 24 }}>
             <h2 style={{ fontSize: 16, marginBottom: 12 }}>Plan activo · NIT {plan?.nit}</h2>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>

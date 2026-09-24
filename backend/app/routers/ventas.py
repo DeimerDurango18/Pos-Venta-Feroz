@@ -52,6 +52,12 @@ def crear_venta(
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
+    return crear_venta_interna(db, data, usuario)
+
+
+def crear_venta_interna(db: Session, data: VentaCreate, usuario: Usuario):
+    """Núcleo compartido de creación de ventas. Lo usan el endpoint y el módulo
+    de facturas recurrentes (scheduler automático)."""
     if data.tipo not in ("contado", "credito"):
         raise HTTPException(400, "Tipo de venta inválido")
 
@@ -65,6 +71,32 @@ def crear_venta(
             raise HTTPException(400, "La caja no pertenece a la sucursal indicada")
     if usuario.sucursal_id and usuario.sucursal_id != data.sucursal_id:
         raise HTTPException(403, f"El usuario solo puede operar en la sucursal {usuario.sucursal_id}")
+
+    caja_id = data.caja_id
+    punto_venta_id = data.punto_venta_id
+    if not caja_id:
+        turnos = (
+            db.query(AperturaCaja)
+            .filter(AperturaCaja.estado == "abierta")
+            .order_by(AperturaCaja.created_at.desc())
+            .all()
+        )
+        turno = next((a for a in turnos if a.usuario_id == usuario.id), None)
+        if not turno:
+            turno = next(
+                (
+                    a
+                    for a in turnos
+                    if a.caja
+                    and a.caja.punto_venta
+                    and a.caja.punto_venta.sucursal_id == data.sucursal_id
+                ),
+                None,
+            )
+        turno = turno or (turnos[0] if turnos else None)
+        if turno:
+            caja_id = turno.caja_id
+            punto_venta_id = punto_venta_id or getattr(turno.caja, "punto_venta_id", None)
 
     institucional = False
     if data.cliente_id:
@@ -144,7 +176,7 @@ def crear_venta(
         )
         raise HTTPException(403, f"Descuento requiere autorización (máx. {umbral.valor})")
 
-    total = subtotal - descuento_global + impuesto_total + float(data.propina or 0)
+    total = round(subtotal - descuento_global + impuesto_total + float(data.propina or 0), 2)
     monto_pagado = sum(p.monto for p in data.pagos)
 
     if data.tipo == "credito":
@@ -164,8 +196,8 @@ def crear_venta(
     venta = Venta(
         empresa_id=data.empresa_id,
         sucursal_id=data.sucursal_id,
-        caja_id=data.caja_id,
-        punto_venta_id=data.punto_venta_id,
+        caja_id=caja_id,
+        punto_venta_id=punto_venta_id,
         usuario_id=usuario.id,
         cliente_id=data.cliente_id,
         tipo=data.tipo,
@@ -546,11 +578,13 @@ def tirilla_html(
     fecha_s = escape(fec_s[:10]) if len(fec_s) >= 10 else ""
     hora_s = escape(fec_s[11:19]) if len(fec_s) > 11 else ""
 
-    cliente_linea = "Consumidor final"
+    cliente_linea = "CONSUMIDOR FINAL · CC 2222222222"
     if cliente:
-        cliente_linea = escape(cliente.nombre or "Cliente")
-        if getattr(cliente, "documento", None):
-            cliente_linea += f" · {escape(str(cliente.tipo_documento or ''))} {escape(str(cliente.documento))}"
+        nombre_cli = escape(cliente.nombre or "CLIENTE").upper()
+        tipo_cli = escape((cliente.tipo_documento or "CC").strip().upper())
+        doc_cli = (getattr(cliente, "documento", "") or "").strip()
+        doc_cli = escape(doc_cli) if doc_cli else "2222222222"
+        cliente_linea = f"{nombre_cli} · {tipo_cli} {doc_cli}"
 
     suc_line = " · ".join(
         x for x in [
@@ -561,11 +595,17 @@ def tirilla_html(
     )
 
     items = []
+    desglose: dict[float, float] = {}
     for d in db.query(VentaDetalle).filter(VentaDetalle.venta_id == venta.id).order_by(VentaDetalle.id).all():
         prod = db.get(Producto, d.producto_id)
         nm = escape(prod.nombre if prod else f"Producto {d.producto_id}").upper()
+        tasa = float(getattr(prod, "impuesto", None) or 0) if prod else 0.0
+        imp_linea = float(d.impuesto if d.impuesto is not None else 0)
+        desglose[tasa] = round(desglose.get(tasa, 0) + imp_linea, 2)
+        pu = float(d.precio or 0)
         items.append(
-            f"<tr><td class='n'>{float(d.cantidad or 1):g}</td><td class='prod'>{nm}</td>"
+            f"<tr><td class='n'>{float(d.cantidad or 1):g}</td><td class='prod'>{nm}"
+            f"<span class='pu'>{float(d.cantidad or 1):g} x {pu:,.0f}</span></td>"
             f"<td class='r'>{float(d.subtotal or 0):,.0f}</td></tr>"
         )
     items_html = "".join(items) or "<tr><td colspan='3'>—</td></tr>"
@@ -602,10 +642,20 @@ def tirilla_html(
         if cc > 0:
             cambio_html = f"<tr class='cambio'><td>CAMBIÓ</td><td class='r'>{cc:,.0f}</td></tr>"
 
+    iva_rows = ""
+    if desglose:
+        iva_rows = "".join(
+            (f"<tr><td>IVA {tasa:g}%</td><td class='r'>{monto:,.0f}</td></tr>" if tasa else
+             "<tr><td>EXENTO</td><td class='r'>0</td></tr>")
+            for tasa, monto in sorted(desglose.items(), key=lambda kv: -kv[0])
+        )
+    else:
+        iva_rows = f"<tr><td>IVA</td><td class='r'>{impuesto:,.0f}</td></tr>" if impuesto else ""
+
     totales_html = (
         f"<tr><td>SUBTOTAL</td><td class='r'>{subtotal:,.0f}</td></tr>"
         + (f"<tr><td>DESCUENTO</td><td class='r'>-{descuento:,.0f}</td></tr>" if descuento else "")
-        + (f"<tr><td>IVA</td><td class='r'>{impuesto:,.0f}</td></tr>" if impuesto else "")
+        + iva_rows
         + (f"<tr><td>PROPINA</td><td class='r'>{propina:,.0f}</td></tr>" if propina else "")
         + (
             f"<tr><td>SALDO PENDIENTE</td><td class='r'>{saldo:,.0f}</td></tr>"
@@ -626,17 +676,25 @@ def tirilla_html(
             if resinfo and resinfo.fecha_inicio
             else "vigente"
         )
+        estado_dian = (doc.estado_dian or "pendiente").upper()
         dian_html = (
             "<div class='rule-d'></div>"
-            + (f"<div class='qr'><img src='{doc.qr}' width='88' height='88' alt='QR'/></div>" if doc.qr else "")
-            + f"<div class='small c'>CUFE: {escape(doc.cufe or '')}</div>"
+            + (f"<div class='qr'><img src='{doc.qr}' width='84' height='84' alt='QR'/></div>" if doc.qr else "")
+            + "<div class='c small' style='margin-top:2px'><b>"
+            + escape(f"{doc.tipo_documento.replace('_', ' ').upper()} {doc.numero}")
+            + "</b>"
+            + (f" · <span class='estado'>{escape(estado_dian)}</span>" if estado_dian != "PENDIENTE" else "")
+            + "</div>"
+            + "<div class='c small cufe'>CUFE: "
+            + escape(doc.cufe or "")
+            + "</div>"
             + (
-                f"<div class='small c'>RES: {escape(str(resinfo.resolucion))} · VIG: {escape(vig)}"
-                f" · RANGO: {resinfo.rango_inicial}-{resinfo.rango_final}</div>"
+                f"<div class='c small'>RES: {escape(str(resinfo.resolucion))} · RANGO: "
+                f"{resinfo.rango_inicial}-{resinfo.rango_final} · VIG: {escape(vig)}</div>"
                 if resinfo
                 else ""
             )
-            + f"<div class='small c'>DOCUMENTO: {escape(str(doc.numero))} · {escape(doc.tipo_documento.replace('_', ' ').upper())}</div>"
+            + "<div class='c small'>Valide este documento en el portal de la DIAN</div>"
         )
     footer_pie = (
         "Comprobante de facturación electrónica de venta · Valide en el portal de la DIAN."
@@ -645,15 +703,22 @@ def tirilla_html(
     )
 
     cuerpo = f"""
-<h1>{nombre}</h1>
-{f'<div class="c">{nit}</div>' if nit else ''}
-{f'<div class="c">{escape(ubica)}</div>' if ubica else ''}
+<div class="head">
+  <div class="nombre">{nombre}</div>
+  {f'<div class="line">{nit}</div>' if nit else ''}
+  {f'<div class="line">{escape(ubica)}</div>' if ubica else ''}
+</div>
 <div class="rule"></div>
 <div class="v">{escape(venta.numero)}</div>
 {doc_line}
-{f'<div class="c small">{fecha_s}   {hora_s}   {escape(suc_line)}</div>' if suc_line else f'<div class="c small">{fecha_s}   {hora_s}</div>'}
-<div class="c">CLIENTE: {cliente_linea}</div>
-{f'<div class="c small">VENTA A CRÉDITO · SALDO {saldo:,.0f}</div>' if venta.tipo == 'credito' and saldo > 0 else ''}
+<div class="meta">
+  <div><span>FECHA</span><b>{fecha_s}</b></div>
+  <div><span>HORA</span><b>{hora_s}</b></div>
+  {f'<div><span>DOCUMENTO</span><b>{escape(str(doc.numero))}</b></div>' if doc else ''}
+  {f'<div><span>ATIENDE</span><b>{escape(suc_line)}</b></div>' if suc_line else ''}
+</div>
+<div class="cli">CLIENTE: {cliente_linea}</div>
+{f'<div class="cli">VENTA A CRÉDITO · SALDO {saldo:,.0f}</div>' if venta.tipo == 'credito' and saldo > 0 else ''}
 <div class="rule"></div>
 <table class="items">
   <tr><th class="n">CANT</th><th>PRODUCTO</th><th class="r">VALOR</th></tr>
@@ -671,7 +736,7 @@ def tirilla_html(
 </table>
 {dian_html}
 <div class="sep"></div>
-<div class="pie thanks">¡GRACIAS POR SU COMPRA!</div>
+<div class="gracias">¡GRACIAS POR SU COMPRA!</div>
 <div class="pie small">{footer_pie}</div>
 {f'<div class="pie small">{leyenda}</div>' if leyenda else ''}
 """
@@ -681,30 +746,40 @@ def tirilla_html(
 <title>Venta {escape(venta.numero)}</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: 'Courier New', monospace; font-size: 12px; color: #000; }}
-  .ticket {{ width: {ancho_mm}mm; margin: 0 auto; padding: 6mm 4mm; }}
-  h1 {{ font-size: 14px; text-align: center; text-transform: uppercase; }}
+  body {{ font-family: 'Courier New', monospace; font-size: 11.5px; color: #000; }}
+  .ticket {{ width: {ancho_mm}mm; margin: 0 auto; padding: 5mm 3.5mm; }}
+  .head {{ border: 1px solid #000; padding: 5px 4px 6px; text-align: center; }}
+  .nombre {{ font-size: 13px; font-weight: 800; letter-spacing: .5px; }}
+  .line {{ font-size: 9px; margin-top: 2px; }}
   .c {{ text-align: center; }}
   .small {{ font-size: 8.5px; }}
-  .v {{ text-align: center; font-weight: 700; font-size: 16px; margin: 1px 0; }}
-  .doc {{ text-align: center; font-weight: 700; font-size: 12px; }}
+  .v {{ text-align: center; font-weight: 800; font-size: 15px; letter-spacing: 1px; margin: 2px 0 1px; }}
+  .doc {{ text-align: center; font-weight: 800; font-size: 11.5px; }}
+  .meta {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1px 6px; margin: 3px 0 2px; font-size: 9px; }}
+  .meta span {{ color: #444; }}
+  .meta b {{ font-weight: 700; }}
+  .cli {{ text-align: center; font-size: 9.5px; margin: 1px 0; }}
   table {{ width: 100%; border-collapse: collapse; }}
-  th {{ font-size: 10px; text-align: left; }}
+  th {{ font-size: 9.5px; text-align: left; border-bottom: 1px solid #000; padding-bottom: 2px; }}
   td {{ padding: 1px 1px; vertical-align: top; }}
   .r {{ text-align: right; white-space: nowrap; }}
   .n {{ text-align: center; font-weight: 700; width: 1%; white-space: nowrap; }}
   .prod {{ padding-left: 2px; }}
+  .pu {{ display: block; font-size: 8px; color: #333; }}
+  .cufe {{ word-break: break-all; }}
+  .estado {{ font-weight: 700; color: #b91c1c; }}
   .rule {{ border-top: 1px solid #000; margin: 3px 0; }}
   .rule-d {{ border-top: 1px dashed #000; margin: 3px 0; }}
   .sep {{ border-top: 1px dashed #000; margin: 4px 0; }}
   .items tr {{ border-bottom: 1px dotted #000; }}
-  .total td {{ font-size: 15px; font-weight: 700; border-top: 2px double #000; border-bottom: 2px double #000; padding: 3px 1px; }}
+  .total td {{ font-size: 15px; font-weight: 800; border-top: 2px double #000; border-bottom: 2px double #000; padding: 3px 1px; }}
   .pago td {{ border-bottom: 1px dashed #000; }}
   .cambio td {{ font-weight: 700; }}
   .ref {{ font-size: 8.5px; }}
   .qr {{ text-align: center; margin: 3px 0; }}
+  .qr img {{ border: 1px dashed #000; padding: 3px; }}
   .pie {{ font-size: 9px; text-align: center; margin-top: 3px; }}
-  .thanks {{ font-size: 11px; font-weight: 700; }}
+  .gracias {{ text-align: center; font-size: 12px; font-weight: 800; letter-spacing: .3px; border: 1px solid #000; padding: 5px 4px; }}
   .noprint {{ display: block; text-align: center; margin: 8px auto; padding: 8px 16px; font-size: 14px; }}
   @media print {{ .noprint {{ display: none; }} body {{ font-size: 11px; }} }}
 </style></head><body>

@@ -13,7 +13,7 @@ class VentaDetalleCreate(BaseModel):
 
 
 class VentaPagoCreate(BaseModel):
-    medio: str  # efectivo, tarjeta, transferencia, QR, nequi, daviplata, otro
+    medio: str  # efectivo, tarjeta, transferencia, QR, nequi, daviplata, breb, otro
     monto: float
     referencia: str | None = None
 

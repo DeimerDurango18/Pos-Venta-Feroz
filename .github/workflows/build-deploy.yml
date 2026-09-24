@@ -1,0 +1,98 @@
+name: build-deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose.yml"
+      - "compose.prod.yml"
+      - "compose.all.yml"
+      - ".env.all.example"
+      - "Caddyfile"
+      - "Dockerfile"
+      - "backend/Dockerfile*"
+      - "frontend/Dockerfile*"
+      - ".github/workflows/*"
+
+env:
+  GHCR_REGISTRY: ghcr.io
+  GHCR_ORG: ${{ github.repository_owner }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        if: secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != ''
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHA="${GITHUB_SHA::7}"
+          TAGS="ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:latest,ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:${SHA}"
+          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
+            TAGS="${TAGS},docker.io/${{ secrets.DOCKERHUB_USERNAME }}/pos-${{ matrix.component }}:latest,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/pos-${{ matrix.component }}:${SHA}"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./${{ matrix.component }}
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+
+      - name: Make GHCR package public
+        continue-on-error: true
+        run: gh api -X PUT "user/packages/container/pos-${{ matrix.component }}/visibility" -f visibility=public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && secrets.VPS_HOST != ''
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Desplegar en el VPS vía SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_SSH_PORT }}
+          command_timeout: "15m"
+          script: |
+            set -e
+            cd "${{ secrets.VPS_DIR }}"
+            git pull --ff-only origin main
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            docker compose -f docker-compose.yml -f compose.prod.yml --env-file .env.prod pull backend frontend
+            docker compose -f docker-compose.yml -f compose.prod.yml --env-file .env.prod up -d db backend frontend caddy
+            docker image prune -f
+            curl -fsS "https://${{ secrets.DOMAIN_API }}/estado" && echo "OK deploy"

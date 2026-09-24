@@ -51,6 +51,70 @@ router = APIRouter(prefix="/domicilios", tags=["domicilios"])
 
 LAT_BASE, LNG_BASE = 4.6762, -74.0487
 
+# Velocidad promedio (km/h) según el vehículo para el cálculo del ETA.
+VELOCIDADES = {"moto": 28.0, "carro": 24.0, "bicicleta": 15.0, "a pie": 5.0, "default": 25.0}
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    """Distancia ortodrómica en kilómetros entre dos coordenadas."""
+    R = 6371.0088
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = p2 - p1
+    dl = math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _metricas(db, ub, pedido):
+    """Distancia total/recorrida/restante, % de avance y ETA en minutos."""
+    if ub.latitud_destino is None or ub.longitud_destino is None:
+        return {
+            "dist_total_km": 0.0,
+            "dist_recorrida_km": 0.0,
+            "dist_restante_km": 0.0,
+            "avance_pct": 0.0,
+            "eta_min": None,
+            "lat_inicio": None,
+            "lng_inicio": None,
+        }
+    dest = (float(ub.latitud_destino), float(ub.longitud_destino))
+    pos = (float(ub.lat), float(ub.lng))
+    # Origen: la posición más antigua registrada en el seguimiento de este pedido.
+    inicio = None
+    ev = (
+        db.query(PedidoEstadoTiempo)
+        .filter(
+            PedidoEstadoTiempo.pedido_id == pedido.id,
+            PedidoEstadoTiempo.lat.isnot(None),
+            PedidoEstadoTiempo.lng.isnot(None),
+        )
+        .order_by(PedidoEstadoTiempo.id.asc())
+        .first()
+    )
+    if ev:
+        inicio = (float(ev.lat), float(ev.lng))
+    if not inicio:
+        inicio = pos
+
+    dist_total = _haversine_km(*inicio, *dest)
+    dist_recorrida = _haversine_km(*inicio, *pos)
+    dist_restante = _haversine_km(*pos, *dest)
+    avance = min(100.0, round(dist_recorrida / dist_total * 100, 1)) if dist_total > 0.001 else 100.0
+
+    rep = db.get(Repartidor, ub.repartidor_id) if ub.repartidor_id else None
+    vel = VELOCIDADES.get((rep.vehiculo or "").strip().lower() if rep else "", VELOCIDADES["default"])
+    eta_min = round(dist_restante / vel * 60, 1) if dist_restante > 0.01 else 0.0
+
+    return {
+        "dist_total_km": round(dist_total, 2),
+        "dist_recorrida_km": round(dist_recorrida, 2),
+        "dist_restante_km": round(dist_restante, 2),
+        "avance_pct": avance,
+        "eta_min": eta_min,
+        "lat_inicio": inicio[0],
+        "lng_inicio": inicio[1],
+    }
+
 
 def _repartidor_out(r, db):
     en_ruta = (
@@ -230,6 +294,7 @@ def _ubicacion_out(db, ub, pedido):
         "dest_lat": ub.latitud_destino,
         "dest_lng": ub.longitud_destino,
         "direccion": ub.direccion,
+        **_metricas(db, ub, pedido),
     }
 
 
@@ -302,7 +367,7 @@ def simular_avance(
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
-    """Mueve la posición del repartidor un 10% hacia el destino (demo GPS)."""
+    """Mueve la posición del repartidor un 22% hacia el destino (demo GPS)."""
     pedido = db.get(Pedido, pedido_id)
     if not pedido:
         raise HTTPException(404, "Pedido no encontrado")
@@ -319,26 +384,33 @@ def simular_avance(
 
     dlat = ub.latitud_destino - ub.lat
     dlng = ub.longitud_destino - ub.lng
-    ub.lat += dlat * 0.10
-    ub.lng += dlng * 0.10
-    rep = None
+    ub.lat += dlat * 0.22
+    ub.lng += dlng * 0.22
     if ub.repartidor_id:
         rep = db.get(Repartidor, ub.repartidor_id)
         if rep:
             rep.lat = ub.lat
             rep.lng = ub.lng
 
-    if abs(dlat) < 0.0002 and abs(dlng) < 0.0002:
+    # Cuando la distancia restante es mínima, se confirma la entrega en el destino.
+    av = _metricas(db, ub, pedido)
+    if av["avance_pct"] >= 99.5 or av["dist_restante_km"] <= 0.30:
+        ub.lat = ub.latitud_destino
+        ub.lng = ub.longitud_destino
         pedido.estado_domicilio = "entregado"
         pedido.estado = "entregado"
         if rep:
+            rep.lat = ub.lat
+            rep.lng = ub.lng
             rep.disponible = "disponible"
-        db.add(PedidoEstadoTiempo(pedido_id=pedido.id, estado="entregado", nota="Entrega completada"))
+        db.add(PedidoEstadoTiempo(pedido_id=pedido.id, estado="entregado", nota="Entrega completada", lat=ub.lat, lng=ub.lng))
     else:
         db.add(PedidoEstadoTiempo(pedido_id=pedido.id, estado="en_ruta", nota="Avance simulado", lat=ub.lat, lng=ub.lng))
 
     db.commit()
-    return {"pedido_id": pedido.id, "lat": ub.lat, "lng": ub.lng, "estado_domicilio": pedido.estado_domicilio, "avance": 0.1}
+    out = _ubicacion_out(db, ub, pedido)
+    out["estado_domicilio"] = pedido.estado_domicilio
+    return out
 
 
 @router.get("/pedidos/{pedido_id}/tracking")

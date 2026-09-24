@@ -75,7 +75,7 @@ a = crear_producto(precio=2500, costo=1000)
 b = crear_producto(precio=4500, costo=2000)
 k = crear_producto(precio=15000, costo=2000)
 
-r = C.get(f"/productos/{k['id']}/receta")
+r = C.get(f"/productos/{k['id']}/receta", headers=H)
 check("GET receta inicial 200", r.status_code == 200, r.text)
 if r.status_code == 200:
     check("Producto no compuesto al inicio", r.json()["es_compuesto"] is False, r.json())
@@ -91,7 +91,7 @@ if r.status_code == 201:
     check("2 ingredientes", len(rec["ingredientes"]) == 2, rec["ingredientes"])
     check("Stock de ingrediente mostrado", rec["ingredientes"][0]["stock"] == 60, rec["ingredientes"][0])
 
-r = C.get(f"/productos/{k['id']}/receta")
+r = C.get(f"/productos/{k['id']}/receta", headers=H)
 rec = r.json()
 check("GET receta refleja componentes y stocks", len(rec["ingredientes"]) == 2 and rec["ingredientes"][0]["stock"] == 60, rec)
 

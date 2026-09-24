@@ -6,7 +6,7 @@ import { formatMoney } from "../components/ui.jsx";
 
 const CENTRO = [4.6762, -74.0487];
 
-const iconRep = (color = "#4f46e5") =>
+const iconRep = (color = "#0e9f74") =>
   L.divIcon({
     className: "",
     html: `<div style="display:grid;place-items:center;width:34px;height:34px;border-radius:50%;background:${color};color:#fff;font-size:17px;box-shadow:0 6px 16px -4px rgba(0,0,0,.55);border:2px solid #fff">🛵</div>`,
@@ -16,7 +16,7 @@ const iconRep = (color = "#4f46e5") =>
 
 const iconDest = L.divIcon({
   className: "",
-  html: `<div style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#4338ca;color:#fff;font-size:13px;box-shadow:0 4px 10px -2px rgba(0,0,0,.5)">🏠</div>`,
+  html: `<div style="display:grid;place-items:center;width:24px;height:24px;border-radius:50%;background:#0b7a59;color:#fff;font-size:13px;box-shadow:0 4px 10px -2px rgba(0,0,0,.5)">🏠</div>`,
   iconSize: [24, 24],
   iconAnchor: [12, 12],
 });
@@ -62,7 +62,7 @@ export default function MapaDomicilios({ refresh = 0, onPick }) {
       if (r.disponible !== "disponible" || !r.activo) continue;
       let mk = repMarkersRef.current.get(r.id);
       if (!mk) {
-        const layer = L.marker([r.lat, r.lng], { icon: iconRep("#10b981") }).addTo(mapRef.current);
+        const layer = L.marker([r.lat, r.lng], { icon: iconRep("#f59e0b") }).addTo(mapRef.current);
         layer.on("click", () => setSelRep(r));
         mk = { layer };
         repMarkersRef.current.set(r.id, mk);
@@ -107,10 +107,16 @@ export default function MapaDomicilios({ refresh = 0, onPick }) {
             if (sel && sel.pedido_id === d.pedido_id) setSel(d);
           }
           if (d.dest_lat != null) {
-            const line = L.polyline([[d.lat, d.lng], [d.dest_lat, d.dest_lng]], {
-              color: "#4f46e5", weight: 3, dashArray: "6 8", opacity: 0.9,
+            if (d.lat_inicio != null) {
+              const recorrida = L.polyline([[d.lat_inicio, d.lng_inicio], [d.lat, d.lng]], {
+                color: "#10b981", weight: 4, opacity: 0.95,
+              }).addTo(mapRef.current);
+              polylinesRef.current.push(recorrida);
+            }
+            const restante = L.polyline([[d.lat, d.lng], [d.dest_lat, d.dest_lng]], {
+              color: "#9ca3af", weight: 3, dashArray: "6 8", opacity: 0.9,
             }).addTo(mapRef.current);
-            polylinesRef.current.push(line);
+            polylinesRef.current.push(restante);
             L.marker([d.dest_lat, d.dest_lng], { icon: iconDest }).addTo(mapRef.current);
           }
         }
@@ -176,9 +182,11 @@ export default function MapaDomicilios({ refresh = 0, onPick }) {
       <div className="map-shell">
         <div ref={divRef} className="map-canvas" />
         <div className="map-legend">
-          <span><i style={{ background: "#4f46e5" }} /> Repartidor en ruta</span>
-          <span><i style={{ background: "#10b981" }} /> Repartidor disponible</span>
-          <span><i style={{ background: "#4338ca" }} /> Destino</span>
+          <span><i style={{ background: "#10b981" }} /> Ruta recorrida</span>
+          <span><i style={{ background: "#9ca3af" }} /> Ruta restante</span>
+<span><i style={{ background: "#0e9f74" }} /> Repartidor en ruta</span>
+              <span><i style={{ background: "#0b7a59" }} /> Destino</span>
+          <span><i style={{ background: "#f59e0b" }} /> Repartidor disponible</span>
         </div>
       </div>
 
@@ -235,6 +243,25 @@ export default function MapaDomicilios({ refresh = 0, onPick }) {
                 </div>
                 <div style={{ fontSize: 13, marginTop: 4 }}>📍 {d.direccion || "Sin dirección"}</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "var(--brand1)", marginTop: 4 }}>{formatMoney(d.total)}</div>
+                {d.dist_restante_km != null && d.avance_pct != null && (
+                  <>
+                    <div className="prog-track" style={{ height: 8, marginTop: 8 }}>
+                      <div
+                        className="prog-fill"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, d.avance_pct))}%`,
+                          background: d.avance_pct >= 100 ? "#10b981" : "var(--brand1)",
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, marginTop: 6, flexWrap: "wrap" }}>
+                      <span>🚚 {d.dist_recorrida_km?.toFixed(2)} km <b style={{ color: "var(--muted)" }}>/ {d.dist_total_km?.toFixed(2)} km</b></span>
+                      <span className="chip" style={{ fontSize: 12 }}>{d.avance_pct.toFixed(0)}%</span>
+                      {d.eta_min != null && <span className="chip" style={{ fontSize: 12, color: "#0f766e" }}>⏱ {d.eta_min >= 60 ? `${Math.floor(d.eta_min / 60)}h ${Math.round(d.eta_min % 60)}m` : `${Math.round(d.eta_min)} min`}</span>}
+                      <span style={{ color: "var(--muted)" }}>↦ {d.dist_restante_km.toFixed(2)} km</span>
+                    </div>
+                  </>
+                )}
                 <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
                   <button className="btn btn-sm btn-primary" onClick={() => select_and_sim(d)}>▶ Simular avance</button>
                   <button className="btn btn-sm" onClick={() => terminar(d.pedido_id)}>Entregado</button>

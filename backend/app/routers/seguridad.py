@@ -56,39 +56,56 @@ def listar_permisos(db: Session = Depends(get_db)):
     ]
 
 
+CATALOGO_PERMISOS = [
+    ("ventas", "crear", "Crear venta"),
+    ("ventas", "leer", "Ver ventas"),
+    ("ventas", "editar", "Editar venta"),
+    ("ventas", "anular", "Anular venta"),
+    ("ventas", "descuento", "Descuentos especiales"),
+    ("ventas", "devolucion", "Devoluciones y cambios"),
+    ("pos", "operar", "Operar punto de venta"),
+    ("caja", "apertura", "Abrir caja"),
+    ("caja", "cierre", "Cerrar caja"),
+    ("caja", "movimientos", "Movimientos de caja"),
+    ("caja", "gastos", "Registrar gastos"),
+    ("inventario", "leer", "Ver inventario"),
+    ("inventario", "ajustar", "Ajustes, mermas y conteos"),
+    ("inventario", "transferir", "Transferencias de stock"),
+    ("productos", "leer", "Ver productos"),
+    ("productos", "editar", "Editar productos"),
+    ("clientes", "leer", "Ver clientes"),
+    ("clientes", "crear", "Crear clientes"),
+    ("clientes", "editar", "Editar clientes"),
+    ("proveedores", "leer", "Ver proveedores"),
+    ("proveedores", "editar", "Editar proveedores"),
+    ("compras", "crear", "Crear compras"),
+    ("financiero", "leer", "Ver reportes financieros"),
+    ("reportes", "leer", "Ver reportes"),
+    ("seguridad", "gestionar", "Gestionar usuarios y permisos"),
+    ("facturacion", "gestionar", "Gestionar facturación DIAN"),
+]
+
+BASE_CAJERO_PERMISOS = {
+    ("ventas", "crear"),
+    ("ventas", "leer"),
+    ("pos", "operar"),
+    ("caja", "apertura"),
+    ("caja", "cierre"),
+    ("caja", "movimientos"),
+    ("caja", "gastos"),
+    ("inventario", "leer"),
+    ("productos", "leer"),
+    ("clientes", "leer"),
+    ("clientes", "crear"),
+    ("reportes", "leer"),
+}
+
+
 @router.post("/permisos/sincronizar")
 def sincronizar_permisos(db: Session = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
     """Crea los permisos del catálogo que falten."""
-    catalogo = [
-        ("ventas", "crear", "Crear venta"),
-        ("ventas", "leer", "Ver ventas"),
-        ("ventas", "editar", "Editar venta"),
-        ("ventas", "anular", "Anular venta"),
-        ("ventas", "descuento", "Descuentos especiales"),
-        ("ventas", "devolucion", "Devoluciones y cambios"),
-        ("pos", "operar", "Operar punto de venta"),
-        ("caja", "apertura", "Abrir caja"),
-        ("caja", "cierre", "Cerrar caja"),
-        ("caja", "movimientos", "Movimientos de caja"),
-        ("caja", "gastos", "Registrar gastos"),
-        ("inventario", "leer", "Ver inventario"),
-        ("inventario", "ajustar", "Ajustes, mermas y conteos"),
-        ("inventario", "transferir", "Transferencias de stock"),
-        ("productos", "leer", "Ver productos"),
-        ("productos", "editar", "Editar productos"),
-        ("clientes", "leer", "Ver clientes"),
-        ("clientes", "crear", "Crear clientes"),
-        ("clientes", "editar", "Editar clientes"),
-        ("proveedores", "leer", "Ver proveedores"),
-        ("proveedores", "editar", "Editar proveedores"),
-        ("compras", "crear", "Crear compras"),
-        ("financiero", "leer", "Ver reportes financieros"),
-        ("reportes", "leer", "Ver reportes"),
-        ("seguridad", "gestionar", "Gestionar usuarios y permisos"),
-        ("facturacion", "gestionar", "Gestionar facturación DIAN"),
-    ]
     creados = 0
-    for modulo, accion, desc in catalogo:
+    for modulo, accion, desc in CATALOGO_PERMISOS:
         permiso = db.query(Permiso).filter(Permiso.modulo == modulo, Permiso.accion == accion).first()
         if not permiso:
             permiso = Permiso(modulo=modulo, accion=accion, descripcion=desc)
@@ -108,23 +125,9 @@ def sincronizar_permisos(db: Session = Depends(get_db), usuario: Usuario = Depen
                     rol_permiso.insert().values(rol_id=admin.id, permiso_id=permiso.id)
                 )
     cajero = db.query(Rol).filter_by(nombre="Cajero").first()
-    base_cajero = {
-        ("ventas", "crear"),
-        ("ventas", "leer"),
-        ("pos", "operar"),
-        ("caja", "apertura"),
-        ("caja", "cierre"),
-        ("caja", "movimientos"),
-        ("caja", "gastos"),
-        ("inventario", "leer"),
-        ("productos", "leer"),
-        ("clientes", "leer"),
-        ("clientes", "crear"),
-        ("reportes", "leer"),
-    }
     if cajero:
         for permiso in db.query(Permiso).all():
-            if (permiso.modulo, permiso.accion) in base_cajero:
+            if (permiso.modulo, permiso.accion) in BASE_CAJERO_PERMISOS:
                 existe = db.execute(
                     rol_permiso.select().where(
                         rol_permiso.c.rol_id == cajero.id, rol_permiso.c.permiso_id == permiso.id
@@ -144,7 +147,7 @@ def sincronizar_permisos(db: Session = Depends(get_db), usuario: Usuario = Depen
         )
     )
     db.commit()
-    return {"total": len(catalogo), "creados": creados, "ok": True}
+    return {"total": len(CATALOGO_PERMISOS), "creados": creados, "ok": True}
 
 
 @router.post("/permisos/{permiso_id}/asignar")

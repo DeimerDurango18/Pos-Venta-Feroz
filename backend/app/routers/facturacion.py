@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..deps import get_current_user
+from ..correo import enviar_correo as enviar_mail
 from ..dian import (
     TIPO_LABEL,
     _desglose_iva,
@@ -43,9 +44,12 @@ router = APIRouter(prefix="/facturacion", tags=["facturacion"])
 
 
 @router.get("/integracion/estado")
-def obtener_estado_integracion(usuario: Usuario = Depends(get_current_user)):
+def obtener_estado_integracion(
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
     """Estado seguro de la integración; no revela certificados ni credenciales."""
-    return estado_integracion_dian()
+    return estado_integracion_dian(db)
 
 
 # ---------- Resoluciones de facturación (191-194) ----------
@@ -185,12 +189,14 @@ def listar_documentos(
     resultado = []
     for d in docs:
         cliente = ""
+        telefono = ""
         if d.venta_id:
             venta = db.get(Venta, d.venta_id)
             if venta and venta.cliente_id:
                 c = db.get(Cliente, venta.cliente_id)
                 if c:
                     cliente = c.nombre
+                    telefono = c.telefono or ""
         resultado.append(
             DocumentoFiscalOut(
                 id=d.id,
@@ -212,6 +218,7 @@ def listar_documentos(
                 concepto=d.concepto,
                 created_at=d.created_at,
                 cliente=cliente,
+                telefono_cliente=telefono,
                 respuesta_dian=d.respuesta_dian,
             )
         )
@@ -228,12 +235,14 @@ def obtener_documento(
     if not d or d.empresa_id != usuario.empresa_id:
         raise HTTPException(404, "Documento no encontrado")
     cliente = ""
+    telefono = ""
     if d.venta_id:
         venta = db.get(Venta, d.venta_id)
         if venta and venta.cliente_id:
             c = db.get(Cliente, venta.cliente_id)
             if c:
                 cliente = c.nombre
+                telefono = c.telefono or ""
     return DocumentoFiscalOut(
         id=d.id,
         venta_id=d.venta_id,
@@ -254,6 +263,7 @@ def obtener_documento(
         concepto=d.concepto,
         created_at=d.created_at,
         cliente=cliente,
+        telefono_cliente=telefono,
         respuesta_dian=d.respuesta_dian,
     )
 
@@ -455,41 +465,42 @@ def ticket_documento(
     leyenda = escape((_fb.get("leyenda_pie") or "").strip())
 
     cuerpo_ticket = f"""
-  <h2>{nombre_co.upper()}</h2>
-  <div class="c">{nit_em}</div>
-  {('<div class="c">' + (sucursal.nombre or '') + (' · ' + sucursal.direccion if sucursal and getattr(sucursal, 'direccion', None) else '') + '</div>') if sucursal else ''}
-  <div class="sep"></div>
+  <div class="head">
+    <div class="nombre">{nombre_co.upper()}</div>
+    {f'<div class="line">{nit_em}</div>' if nit_em else ''}
+    {('<div class="line">' + (sucursal.nombre or '') + (' · ' + sucursal.direccion if sucursal and getattr(sucursal, 'direccion', None) else '') + '</div>') if sucursal else ''}
+  </div>
+  <div class="rule"></div>
+  <div class="doc">{TIPO_LABEL.get(doc.tipo_documento, doc.tipo_documento).upper()} {escape(doc.numero)}</div>
+  <div class="meta">
+    <div><span>FECHA</span><b>{fecha_short}</b></div>
+    <div><span>HORA</span><b>{hora_short}</b></div>
+    <div><span>ESTADO</span><b>{'ANULADO' if doc.anulado else (doc.estado_dian or '').upper()}</b></div>
+    <div><span>CLIENTE</span><b>{cliente_linea}</b></div>
+  </div>
+  <div class="rule"></div>
   <table>
-    <tr><td>Documento</td><td class="r">{TIPO_LABEL.get(doc.tipo_documento, doc.tipo_documento)}</td></tr>
-    <tr><td>Número</td><td class="r"><b>{doc.numero}</b></td></tr>
-    <tr><td>Fecha</td><td class="r">{fecha_short}</td></tr>
-    <tr><td>Hora</td><td class="r">{hora_short}</td></tr>
-    <tr><td>Estado DIAN</td><td class="r">{'ANULADO' if doc.anulado else (doc.estado_dian or '').upper()}</td></tr>
-  </table>
-  {f'<table><tr><td>Resolución</td><td class="r">{escape(str(res_ticket.resolucion))}</td></tr><tr><td>Vigencia</td><td class="r">{escape(vig)}</td></tr><tr><td>Rango</td><td class="r">{res_ticket.rango_inicial}-{res_ticket.rango_final}</td></tr></table>' if res_ticket else ''}
-  <table><tr><td>Cliente</td><td class="r">{cliente_linea}</td></tr></table>
-  <div class="sep"></div>
-  <table>
-    <tr><th class="n">Cant</th><th>Producto</th><th class="r">P/U</th><th class="r">Sub</th></tr>
+    <tr><th class="n">CANT</th><th>PRODUCTO</th><th class="r">P/U</th><th class="r">SUBTOTAL</th></tr>
     {items_html}
   </table>
-  <div class="sep"></div>
-  <table>
-    <tr><td>Subtotal</td><td class="r">{subtotal:,.0f}</td></tr>
-    <tr><td>Descuento</td><td class="r">-{descuento:,.0f}</td></tr>
-    <tr><td>Impuestos (IVA)</td><td class="r">{impuesto:,.0f}</td></tr>
-    <tr><td>Propina</td><td class="r">{propina:,.0f}</td></tr>
-    <tr class="tot"><td>Total</td><td class="r">{total:,.0f}</td></tr>
+  <div class="rule-d"></div>
+  <table class="totales">
+    <tr><td>SUBTOTAL</td><td class="r">{subtotal:,.0f}</td></tr>
+    <tr><td>DESCUENTO</td><td class="r">-{descuento:,.0f}</td></tr>
+    <tr><td>IVA</td><td class="r">{impuesto:,.0f}</td></tr>
+    <tr><td>PROPINA</td><td class="r">{propina:,.0f}</td></tr>
+    <tr class="tot"><td>TOTAL</td><td class="r">{total:,.0f}</td></tr>
   </table>
-  <div class="sep"></div>
-  <table>
-    <tr><th>Pago</th><th class="r">Monto</th><th class="r">Aprobación</th></tr>
+  <div class="rule"></div>
+  <table class="pagos">
+    <tr><th>PAGO</th><th class="r">MONTO</th><th class="r">APROBACIÓN</th></tr>
     {pagos_html}
   </table>
   <div class="qr">{qr}</div>
-  <div class="pie">{'CUDE' if doc.tipo_documento in ('nota_credito', 'nota_debito') else 'CUFE'}: {doc.cufe or ''}</div>
+  <div class="c small cufe">{'CUDE' if doc.tipo_documento in ('nota_credito', 'nota_debito') else 'CUFE'}: {escape(doc.cufe or '')}</div>
   {res_linea}
   {f'<div class="pie">{leyenda}</div>' if leyenda else ''}
+  <div class="gracias">DOCUMENTO DE FACTURACIÓN ELECTRÓNICA</div>
   <div class="pie">La validez de este documento puede verificarse en el portal de la DIAN.</div>
 """
     return f"""<!doctype html>
@@ -497,17 +508,31 @@ def ticket_documento(
 <title>Ticket {doc.numero}</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-  body {{ font-family: 'Courier New', monospace; font-size: 12px; color: #000; }}
-  .ticket {{ width: {ancho_mm}mm; margin: 0 auto; padding: 6mm; }}
-  h2 {{ font-size: 13px; text-align: center; margin-bottom: 2px; }}
+  body {{ font-family: 'Courier New', monospace; font-size: 11.5px; color: #000; }}
+  .ticket {{ width: {ancho_mm}mm; margin: 0 auto; padding: 5mm 3.5mm; }}
+  .head {{ border: 1px solid #000; padding: 5px 4px 6px; text-align: center; }}
+  .nombre {{ font-size: 13px; font-weight: 800; letter-spacing: .5px; }}
+  .line {{ font-size: 9px; margin-top: 2px; }}
+  .doc {{ text-align: center; font-weight: 800; font-size: 13px; letter-spacing: .5px; margin: 2px 0 1px; }}
   .c {{ text-align: center; }}
+  .small {{ font-size: 8.5px; }}
+  .meta {{ display: grid; grid-template-columns: 1fr 1fr; gap: 1px 6px; margin: 3px 0 2px; font-size: 9px; }}
+  .meta span {{ color: #444; }}
+  .meta b {{ font-weight: 700; }}
   table {{ width: 100%; border-collapse: collapse; }}
+  th {{ font-size: 9.5px; text-align: left; border-bottom: 1px solid #000; padding-bottom: 2px; }}
   td {{ padding: 1px 2px; }}
-  .r {{ text-align: right; }} .n {{ text-align: center; }}
+  .r {{ text-align: right; }} .n {{ text-align: center; font-weight: 700; width: 1%; }}
+  .rule {{ border-top: 1px solid #000; margin: 3px 0; }}
+  .rule-d {{ border-top: 1px dashed #000; margin: 3px 0; }}
   .sep {{ border-top: 1px dashed #000; margin: 4px 0; }}
-  .tot {{ font-weight: 700; font-size: 14px; }}
+  .tot td {{ font-size: 14px; font-weight: 800; border-top: 2px double #000; border-bottom: 2px double #000; padding: 3px 2px; }}
+  .pago td {{ border-bottom: 1px dashed #000; }}
   .qr {{ text-align: center; margin: 4px 0; }}
+  .qr img {{ border: 1px dashed #000; padding: 3px; }}
+  .cufe {{ word-break: break-all; }}
   .pie {{ font-size: 9px; text-align: center; margin-top: 4px; }}
+  .gracias {{ text-align: center; font-size: 10.5px; font-weight: 800; letter-spacing: .3px; border: 1px solid #000; padding: 4px; margin-top: 4px; }}
   .noprint {{ display: block; text-align: center; margin: 8px auto; padding: 8px 16px; font-size: 14px; }}
   @media print {{ .noprint {{ display: none; }} body {{ font-size: 11px; }} }}
 </style></head><body>
@@ -664,7 +689,7 @@ def enviar_correo(
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
-    """Envía la factura por correo (simulado: queda registrado en auditoría)."""
+    """Envía la factura por correo vía SMTP (queda registrado en auditoría)."""
     d = _obtener_doc(db, doc_id, usuario.empresa_id)
     cliente = ""
     if d.venta_id:
@@ -674,7 +699,37 @@ def enviar_correo(
             if c:
                 cliente = c.email or ""
     empresa = db.get(Empresa, d.empresa_id)
-    destinatario = cliente or (empresa.email if empresa else "") or "(correo no registrado, simulado)"
+    destinatario = cliente or (empresa.email if empresa else "") or ""
+    if not destinatario:
+        db.add(
+            AuditoriaLog(
+                usuario_id=usuario.id,
+                modulo="facturacion",
+                accion="correo",
+                entidad="documento_fiscal",
+                entidad_id=d.id,
+                detalle="Correo NO enviado: documento sin email del cliente ni de la empresa",
+            )
+        )
+        db.commit()
+        return {"ok": False, "destinatario": "", "asunto": "", "error": "El documento no tiene un correo asociado"}
+    asunto = f"Factura {d.numero}"
+    nombre = escape((empresa.razon_social or empresa.nombre or "Empresa") if empresa else "Empresa")
+    html = (
+        "<div style='font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;padding:24px'>"
+        "<div style='max-width:520px;margin:0 auto;background:#fff;border-radius:10px;"
+        "border:1px solid #e2e8f0;overflow:hidden'>"
+        "<div style='background:#0f172a;color:#fff;padding:14px 20px;font-weight:700;font-size:16px'>"
+        f"{nombre} · {escape(d.numero)}</div>"
+        "<div style='padding:20px'>"
+        f"<p>Hola,</p>"
+        f"<p>Adjuntamos tu documento <b>{escape(d.numero)}</b> por <b>${float(d.total or 0):,.0f}</b>.</p>"
+        f"<p>Fecha: {d.fecha.strftime('%d/%m/%Y %H:%M') if d.fecha else '-'}</p>"
+        f"<p style='color:#64748b;font-size:13px'>CUFE: {escape(d.cufe or '')}</p>"
+        "</div></div></div>"
+    )
+    texto = f"{d.numero} - total ${float(d.total or 0):,.0f}"
+    resultado = enviar_mail(db, destinatario, asunto, html, texto_plano=texto)
     db.add(
         AuditoriaLog(
             usuario_id=usuario.id,
@@ -682,11 +737,17 @@ def enviar_correo(
             accion="correo",
             entidad="documento_fiscal",
             entidad_id=d.id,
-            detalle=f"Factura {d.numero} enviada por correo a {destinatario}",
+            detalle=(
+                f"Factura {d.numero} enviada por correo a {destinatario}"
+                if resultado.get("ok")
+                else f"Fallo al enviar factura {d.numero} a {destinatario}: {resultado.get('error')}"
+            ),
         )
     )
     db.commit()
-    return {"ok": True, "destinatario": destinatario, "asunto": f"Factura {d.numero}"}
+    if not resultado.get("ok"):
+        return {"ok": False, "destinatario": destinatario, "asunto": asunto, "error": resultado.get("error")}
+    return {"ok": True, "destinatario": destinatario, "asunto": asunto}
 
 
 @router.post("/{doc_id}/whatsapp")

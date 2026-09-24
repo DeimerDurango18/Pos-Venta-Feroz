@@ -714,6 +714,96 @@ def alertas(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/metas")
+def reporte_metas(db: Session = Depends(get_db)):
+    """Metas diarias/mensuales, comparativos contra ayer/semana y ranking de vendedores."""
+    from ..models import Configuracion, MetaVendedor
+
+    hoy = datetime.now().date()
+
+    def _config(clave, default="0"):
+        fila = db.query(Configuracion).filter(Configuracion.clave == clave).first()
+        return float(fila.valor or default) if fila else float(default)
+
+    meta_diaria = _config("pos.meta_diaria")
+    meta_mensual = _config("pos.meta_mensual")
+
+    ventas = db.query(Venta).filter(Venta.estado == "completada")
+    ventas_hoy = sum(
+        float(v.total) for v in ventas.filter(cast(Venta.created_at, Date) == hoy).all()
+    )
+    ventas_ayer = sum(
+        float(v.total)
+        for v in ventas.filter(cast(Venta.created_at, Date) == hoy - timedelta(days=1)).all()
+    )
+    ventas_mes = sum(
+        float(v.total) for v in ventas.filter(Venta.created_at >= hoy.replace(day=1)).all()
+    )
+    ventas_semana = sum(
+        float(v.total) for v in ventas.filter(Venta.created_at >= hoy - timedelta(days=7)).all()
+    )
+    promedio_7d = ventas_semana / 7
+
+    def _pct(actual, meta):
+        return round(actual / meta * 100, 1) if meta > 0 else None
+
+    def _delta(actual, base):
+        return round((actual - base) / base * 100, 1) if base > 0 else None
+
+    ranking = []
+    filas = (
+        db.query(
+            Venta.usuario_id,
+            func.sum(Venta.total).label("total"),
+            func.count(Venta.id).label("n"),
+        )
+        .filter(Venta.estado == "completada", cast(Venta.created_at, Date) == hoy)
+        .group_by(Venta.usuario_id)
+        .order_by(func.sum(Venta.total).desc())
+        .limit(8)
+        .all()
+    )
+    for usuario_id, total, n in filas:
+        if usuario_id is None:
+            continue
+        u = db.get(Usuario, usuario_id)
+        if not u:
+            continue
+        meta_v = (
+            db.query(MetaVendedor)
+            .filter_by(vendedor_id=u.id, periodo=hoy.strftime("%Y-%m"))
+            .first()
+        )
+        meta_ventas = float(meta_v.meta_ventas or 0) if meta_v else 0
+        ranking.append(
+            {
+                "usuario_id": u.id,
+                "vendedor": u.nombre,
+                "ventas_hoy": float(total or 0),
+                "transacciones": int(n or 0),
+                "meta_mensual": meta_ventas,
+                "cumplimiento_meta": _pct(float(total or 0), meta_ventas),
+            }
+        )
+
+    return {
+        "meta_diaria": meta_diaria,
+        "meta_mensual": meta_mensual,
+        "ventas_hoy": round(ventas_hoy, 2),
+        "ventas_ayer": round(ventas_ayer, 2),
+        "ventas_mes": round(ventas_mes, 2),
+        "ventas_semana": round(ventas_semana, 2),
+        "promedio_7d": round(promedio_7d, 2),
+        "avance_diario_pct": _pct(ventas_hoy, meta_diaria),
+        "avance_mensual_pct": _pct(ventas_mes, meta_mensual),
+        "faltante_diario": round(max(0, meta_diaria - ventas_hoy), 2),
+        "faltante_mensual": round(max(0, meta_mensual - ventas_mes), 2),
+        "vs_ayer_pct": _delta(ventas_hoy, ventas_ayer),
+        "vs_promedio_7d_pct": _delta(ventas_hoy, promedio_7d),
+        "ranking_vendedores": ranking,
+    }
+
+
 @router.get("/vendedores")
 def reporte_vendedores(
     desde: str | None = Query(None),
@@ -938,6 +1028,197 @@ def exportar_ventas(
     ]
     return _respuesta_exportar(
         "Ventas", ["Numero", "Fecha", "Estado", "Subtotal", "Impuesto", "Total"], filas, formato
+    )
+
+
+@router.get("/exportar/ventas-detallado")
+def exportar_ventas_detallado(
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+    formato: str = Query("xls"),
+    db: Session = Depends(get_db),
+):
+    """Ventas con cliente y cajero para conciliación contable."""
+    ini = _parse_fecha(desde)
+    fin = _parse_fecha(hasta, fin_de_dia=True)
+    q = db.query(Venta)
+    if ini:
+        q = q.filter(Venta.created_at >= ini)
+    if fin:
+        q = q.filter(Venta.created_at < fin)
+    clientes = {}
+    cajeros = {}
+    ids_cli = {v.cliente_id for v in q.all() if v.cliente_id}
+    ids_caj = {v.usuario_id for v in q.all() if v.usuario_id}
+    if ids_cli:
+        for c in db.query(Cliente).filter(Cliente.id.in_(ids_cli)).all():
+            clientes[c.id] = c.nombre
+    if ids_caj:
+        for u in db.query(Usuario).filter(Usuario.id.in_(ids_caj)).all():
+            cajeros[u.id] = u.nombre
+    filas = []
+    total = 0.0
+    for v in q.order_by(Venta.id.desc()).all():
+        total += float(v.total or 0)
+        filas.append(
+            [
+                v.numero,
+                str(v.created_at)[:16],
+                v.estado,
+                clientes.get(v.cliente_id, ""),
+                cajeros.get(v.usuario_id, ""),
+                float(v.subtotal or 0),
+                float(v.impuesto or 0),
+                float(v.descuento or 0) if v.descuento else 0,
+                float(v.total or 0),
+            ]
+        )
+    filas.append(["TOTAL (COP)", "", "", "", "", "", "", "", round(total, 2)])
+    return _respuesta_exportar(
+        "Ventas detallado",
+        ["Numero", "Fecha", "Estado", "Cliente", "Cajero", "Subtotal", "Impuesto", "Descuento", "Total"],
+        filas,
+        formato,
+    )
+
+
+@router.get("/exportar/cartera")
+def exportar_cartera(
+    formato: str = Query("xls"),
+    db: Session = Depends(get_db),
+):
+    """Cuentas por cobrar (ventas a crédito no saldadas)."""
+    filas = (
+        db.query(Cliente, Venta)
+        .join(Venta, Venta.cliente_id == Cliente.id)
+        .filter(Venta.tipo == "credito", Venta.estado == "completada", Venta.saldo > 0)
+        .order_by(Venta.id.desc())
+        .all()
+    )
+    out = [
+        [cliente.nombre, str(cliente.telefono or ""), v.numero, str(v.created_at)[:10], float(v.saldo or 0)]
+        for cliente, v in filas
+    ]
+    total = round(sum(float(v.saldo or 0) for _, v in filas), 2)
+    out.append(["TOTAL CARTERA (COP)", "", "", "", total])
+    return _respuesta_exportar(
+        "Cartera", ["Cliente", "Telefono", "Venta", "Fecha", "Saldo"], out, formato
+    )
+
+
+@router.get("/exportar/gastos")
+def exportar_gastos(
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+    formato: str = Query("xls"),
+    db: Session = Depends(get_db),
+):
+    ini = _parse_fecha(desde)
+    fin = _parse_fecha(hasta, fin_de_dia=True)
+    q = db.query(Gasto)
+    if ini:
+        q = q.filter(Gasto.created_at >= ini)
+    if fin:
+        q = q.filter(Gasto.created_at < fin)
+    cajeros = {}
+    ids = {g.usuario_id for g in q.all()}
+    if ids:
+        for u in db.query(Usuario).filter(Usuario.id.in_(ids)).all():
+            cajeros[u.id] = u.nombre
+    filas = [
+        [
+            g.id,
+            str(g.created_at)[:16],
+            g.categoria,
+            str(g.concepto or ""),
+            cajeros.get(g.usuario_id, ""),
+            g.medio,
+            float(g.monto or 0),
+        ]
+        for g in q.order_by(Gasto.id.desc()).all()
+    ]
+    total = round(sum(float(g.monto or 0) for g in q.all()), 2)
+    filas.append(["TOTAL GASTOS (COP)", "", "", "", "", "", total])
+    return _respuesta_exportar(
+        "Gastos", ["Id", "Fecha", "Categoria", "Concepto", "Registrado por", "Medio", "Monto"], filas, formato
+    )
+
+
+@router.get("/exportar/compras")
+def exportar_compras(
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+    formato: str = Query("xls"),
+    db: Session = Depends(get_db),
+):
+    ini = _parse_fecha(desde)
+    fin = _parse_fecha(hasta, fin_de_dia=True)
+    q = db.query(Compra)
+    if ini:
+        q = q.filter(Compra.created_at >= ini)
+    if fin:
+        q = q.filter(Compra.created_at < fin)
+    proveedores = {p.id: p.nombre for p in db.query(Proveedor).all()}
+    filas = [
+        [
+            c.numero,
+            str(c.created_at)[:16],
+            proveedores.get(c.proveedor_id, ""),
+            c.estado,
+            float(c.total or 0),
+        ]
+        for c in q.order_by(Compra.id.desc()).all()
+    ]
+    total = round(sum(float(c.total or 0) for c in q.all()), 2)
+    filas.append(["TOTAL COMPRAS (COP)", "", "", "", total])
+    return _respuesta_exportar(
+        "Compras", ["Numero", "Fecha", "Proveedor", "Estado", "Total"], filas, formato
+    )
+
+
+@router.get("/exportar/cierres")
+def exportar_cierres(
+    desde: str | None = Query(None),
+    hasta: str | None = Query(None),
+    formato: str = Query("xls"),
+    db: Session = Depends(get_db),
+):
+    """Cierres de caja (turnos cerrados)."""
+    ini = _parse_fecha(desde)
+    fin = _parse_fecha(hasta, fin_de_dia=True)
+    q = (
+        db.query(AperturaCaja)
+        .join(Caja, Caja.id == AperturaCaja.caja_id)
+        .filter(AperturaCaja.estado == "cerrada")
+    )
+    if ini:
+        q = q.filter(AperturaCaja.created_at >= ini)
+    if fin:
+        q = q.filter(AperturaCaja.created_at < fin)
+    cajas = {c.id: c.nombre for c in db.query(Caja).all()}
+    cajeros = {}
+    ids = {a.usuario_id for a in q.all()}
+    if ids:
+        for u in db.query(Usuario).filter(Usuario.id.in_(ids)).all():
+            cajeros[u.id] = u.nombre
+    filas = [
+        [
+            a.id,
+            str(a.created_at)[:16],
+            cajas.get(a.caja_id, f"Caja {a.caja_id}"),
+            cajeros.get(a.usuario_id, ""),
+            float(a.saldo_inicial or 0),
+            float(a.saldo_cierre or 0),
+        ]
+        for a in q.order_by(AperturaCaja.id.desc()).all()
+    ]
+    total = round(sum(float(a.saldo_cierre or 0) for a in q.all()), 2)
+    filas.append(["TOTAL CIERRES (COP)", "", "", "", "", total])
+    return _respuesta_exportar(
+        "Cierres de caja",
+        ["Id", "Fecha", "Caja", "Cajero", "Saldo inicial", "Saldo de cierre"],
+        filas,
+        formato,
     )
 
 

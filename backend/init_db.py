@@ -30,6 +30,7 @@ from app.models import (
     rol_permiso,
 )
 from app.security import hash_password
+from app.routers.seguridad import BASE_CAJERO_PERMISOS, CATALOGO_PERMISOS
 
 
 def _migrar(conn):
@@ -50,6 +51,7 @@ def _migrar(conn):
         ("empresas", "tipo_negocio", "VARCHAR(30) NOT NULL DEFAULT 'general'"),
         ("cajas", "es_principal", "BOOLEAN NOT NULL DEFAULT FALSE"),
         ("establecimientos", "modelo_negocio_id", "INTEGER"),
+        ("comanda_detalle", "cortesia", "BOOLEAN DEFAULT FALSE"),
     ]
     dialecto = conn.dialect.name
     if not dialecto.startswith("mssql"):
@@ -102,6 +104,124 @@ def _seed_modelos_negocio(db):
         )
     db.commit()
     print(f"Modelos de negocio creados ({len(modelos)}).")
+
+
+def _seed_complementarios(db):
+    """Datos complementarios: proveedor, impuestos, resolución, configs, bodega, repartidores, rutas."""
+    emp = db.query(Empresa).order_by(Empresa.id).first()
+    eid = emp.id if emp else 1
+    if db.query(Proveedor).count() == 0:
+        db.add(
+            Proveedor(
+                empresa_id=eid,
+                nombre="Proveedor Demo S.A.S.",
+                nit="901000000",
+                contacto="Ventas",
+                telefono="3180000000",
+            )
+        )
+    if db.query(Impuesto).count() == 0:
+        db.add(Impuesto(nombre="IVA 19%", tasa=19, activo=True))
+        db.add(Impuesto(nombre="Exento", tasa=0, activo=True))
+    if db.query(ResolucionFacturacion).count() == 0:
+        db.add(
+            ResolucionFacturacion(
+                empresa_id=eid,
+                resolucion="187600000001",
+                prefijo="FV",
+                tipo_documento="factura",
+                rango_inicial=1,
+                rango_final=100000,
+                numero_actual=0,
+                fecha_inicio=date.today(),
+                fecha_vencimiento=date.today() + timedelta(days=365 * 5),
+                activa=True,
+            )
+        )
+    for clave, valor in (
+        ("puntos_por_monto", "1000"),
+        ("descuento_maximo_sin_autorizacion", "20000"),
+    ):
+        if not db.query(Configuracion).filter(Configuracion.clave == clave).first():
+            db.add(Configuracion(clave=clave, valor=valor))
+    for clave, valor in (
+        ("pos.combos_consumen", "0"),
+        ("pos.inventario_negativo", "0"),
+        ("pos.meta_diaria", ""),
+        ("pos.meta_mensual", ""),
+        ("pos.cierres_correo", ""),
+    ):
+        if not db.query(Configuracion).filter(Configuracion.clave == clave).first():
+            db.add(Configuracion(clave=clave, valor=valor))
+    if db.query(Bodega).count() == 0:
+        bodega = Bodega(
+            empresa_id=eid,
+            sucursal_id=1,
+            nombre="Bodega Principal",
+            codigo="BOD-001",
+            direccion="Sucursal Principal",
+            activa=True,
+        )
+        db.add(bodega)
+        db.flush()
+        db.add_all(
+            [
+                Ubicacion(bodega_id=bodega.id, nombre="Estantería A", codigo="EST-A"),
+                Ubicacion(bodega_id=bodega.id, nombre="Estantería B", codigo="EST-B"),
+            ]
+        )
+    if db.query(Repartidor).count() == 0:
+        cajero = db.query(Usuario).filter(Usuario.username == "cajero").first()
+        db.add_all(
+            [
+                Repartidor(
+                    empresa_id=eid,
+                    usuario_id=cajero.id if cajero else None,
+                    nombre="Carlos Mendoza",
+                    telefono="3181112233",
+                    placa="RCY-123",
+                    vehiculo="moto",
+                    lat=4.6765,
+                    lng=-74.0483,
+                    disponible="disponible",
+                    activo=1,
+                ),
+                Repartidor(
+                    empresa_id=eid,
+                    usuario_id=None,
+                    nombre="Valentina Rojas",
+                    telefono="3207654321",
+                    placa="RWS-456",
+                    vehiculo="bicicleta",
+                    lat=4.6721,
+                    lng=-74.0531,
+                    disponible="disponible",
+                    activo=1,
+                ),
+                Repartidor(
+                    empresa_id=eid,
+                    usuario_id=None,
+                    nombre="Pedro Jiménez",
+                    telefono="3109876543",
+                    placa=None,
+                    vehiculo="a pie",
+                    lat=4.6802,
+                    lng=-74.0445,
+                    disponible="disponible",
+                    activo=1,
+                ),
+            ]
+        )
+    if db.query(RutaEntrega).count() == 0:
+        db.add_all(
+            [
+                RutaEntrega(empresa_id=eid, nombre="Zona Centro", tarifa=3000, detalle="Carrera 7 a Carrera 15, centro"),
+                RutaEntrega(empresa_id=eid, nombre="Zona Norte", tarifa=5000, detalle="Calle 72 a Calle 100"),
+                RutaEntrega(empresa_id=eid, nombre="Zona Sur", tarifa=7000, detalle="Avenida Villavicencio y alrededores"),
+            ]
+        )
+    db.commit()
+    print("Datos complementarios listos.")
 
 
 def init_db():
@@ -195,7 +315,37 @@ def init_db():
             )
             db.add(cajero)
 
+            base_cajero = BASE_CAJERO_PERMISOS
+            for modulo, accion, desc in CATALOGO_PERMISOS:
+                permiso = db.query(Permiso).filter(Permiso.modulo == modulo, Permiso.accion == accion).first()
+                if not permiso:
+                    permiso = Permiso(modulo=modulo, accion=accion, descripcion=desc)
+                    db.add(permiso)
+                    db.flush()
+                existe_admin = db.execute(
+                    rol_permiso.select().where(
+                        rol_permiso.c.rol_id == rol_admin.id, rol_permiso.c.permiso_id == permiso.id
+                    )
+                ).first()
+                if not existe_admin:
+                    db.execute(
+                        rol_permiso.insert().values(rol_id=rol_admin.id, permiso_id=permiso.id)
+                    )
+            for permiso in db.query(Permiso).all():
+                if (permiso.modulo, permiso.accion) in base_cajero:
+                    existe = db.execute(
+                        rol_permiso.select().where(
+                            rol_permiso.c.rol_id == rol_cajero.id,
+                            rol_permiso.c.permiso_id == permiso.id,
+                        )
+                    ).first()
+                    if not existe:
+                        db.execute(
+                            rol_permiso.insert().values(rol_id=rol_cajero.id, permiso_id=permiso.id)
+                        )
+
             db.commit()
+            _seed_complementarios(db)
             print("Datos iniciales creados correctamente.")
             print("  - Empresa: Mi Empresa POS")
             print("  - Usuario admin (Administrador)")
@@ -204,115 +354,7 @@ def init_db():
                 print("  - IMPORTANTE: el sistema pedirá cambiar la contraseña en el primer ingreso.")
         else:
             print("La base de datos ya tiene datos. Revisando datos complementarios...")
-            if db.query(Proveedor).count() == 0:
-                db.add(
-                    Proveedor(
-                        empresa_id=1,
-                        nombre="Proveedor Demo S.A.S.",
-                        nit="901000000",
-                        contacto="Ventas",
-                        telefono="3180000000",
-                    )
-                )
-            if db.query(Impuesto).count() == 0:
-                db.add(Impuesto(nombre="IVA 19%", tasa=19, activo=True))
-                db.add(Impuesto(nombre="Exento", tasa=0, activo=True))
-            if db.query(ResolucionFacturacion).count() == 0:
-                db.add(
-                    ResolucionFacturacion(
-                        empresa_id=1,
-                        resolucion="187600000001",
-                        prefijo="FV",
-                        tipo_documento="factura",
-                        rango_inicial=1,
-                        rango_final=100000,
-                        numero_actual=0,
-                        fecha_inicio=date.today(),
-                        fecha_vencimiento=date.today() + timedelta(days=365 * 5),
-                        activa=True,
-                    )
-                )
-            for clave, valor in (
-                ("puntos_por_monto", "1000"),
-                ("descuento_maximo_sin_autorizacion", "20000"),
-            ):
-                if not db.query(Configuracion).filter(Configuracion.clave == clave).first():
-                    db.add(Configuracion(clave=clave, valor=valor))
-            for clave, valor in (
-                ("pos.combos_consumen", "0"),
-                ("pos.inventario_negativo", "0"),
-            ):
-                if not db.query(Configuracion).filter(Configuracion.clave == clave).first():
-                    db.add(Configuracion(clave=clave, valor=valor))
-            if db.query(Bodega).count() == 0:
-                bodega = Bodega(
-                    empresa_id=1,
-                    sucursal_id=1,
-                    nombre="Bodega Principal",
-                    codigo="BOD-001",
-                    direccion="Sucursal Principal",
-                    activa=True,
-                )
-                db.add(bodega)
-                db.flush()
-                db.add_all(
-                    [
-                        Ubicacion(bodega_id=bodega.id, nombre="Estantería A", codigo="EST-A"),
-                        Ubicacion(bodega_id=bodega.id, nombre="Estantería B", codigo="EST-B"),
-                    ]
-                )
-            if db.query(Repartidor).count() == 0:
-                cajero = db.query(Usuario).filter(Usuario.username == "cajero").first()
-                db.add_all(
-                    [
-                        Repartidor(
-                            empresa_id=1,
-                            usuario_id=cajero.id if cajero else None,
-                            nombre="Carlos Mendoza",
-                            telefono="3181112233",
-                            placa="RCY-123",
-                            vehiculo="moto",
-                            lat=4.6765,
-                            lng=-74.0483,
-                            disponible="disponible",
-                            activo=1,
-                        ),
-                        Repartidor(
-                            empresa_id=1,
-                            usuario_id=None,
-                            nombre="Valentina Rojas",
-                            telefono="3207654321",
-                            placa="RWS-456",
-                            vehiculo="bicicleta",
-                            lat=4.6721,
-                            lng=-74.0531,
-                            disponible="disponible",
-                            activo=1,
-                        ),
-                        Repartidor(
-                            empresa_id=1,
-                            usuario_id=None,
-                            nombre="Pedro Jiménez",
-                            telefono="3109876543",
-                            placa=None,
-                            vehiculo="a pie",
-                            lat=4.6802,
-                            lng=-74.0445,
-                            disponible="disponible",
-                            activo=1,
-                        ),
-                    ]
-                )
-            if db.query(RutaEntrega).count() == 0:
-                db.add_all(
-                    [
-                        RutaEntrega(empresa_id=1, nombre="Zona Centro", tarifa=3000, detalle="Carrera 7 a Carrera 15, centro"),
-                        RutaEntrega(empresa_id=1, nombre="Zona Norte", tarifa=5000, detalle="Calle 72 a Calle 100"),
-                        RutaEntrega(empresa_id=1, nombre="Zona Sur", tarifa=7000, detalle="Avenida Villavicencio y alrededores"),
-                    ]
-                )
-            db.commit()
-            print("Datos complementarios listos.")
+            _seed_complementarios(db)
     finally:
         db.close()
 

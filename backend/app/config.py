@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # Modo simulado del ciclo DIAN (enviar/consultar) para operar a diario sin
     # conector certificado. Pasa a 0 al conectar un conector UBL/XAdES real.
     DIAN_MOCK_TRANSMISSION: bool = True
+    # Conector DIAN activo: mock | webservice | pst. Con "mock" (o sin conector
+    # configurado) el modo produccion queda bloqueado (501) y nunca simula.
+    # "webservice" usa los WS de la DIAN; "pst" usa un proveedor tecnológico
+    # certificado (DIAN_PROVIDER_URL) en nombre del software.
+    DIAN_CONECTOR: str = "mock"
 
     def cors_origins(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]

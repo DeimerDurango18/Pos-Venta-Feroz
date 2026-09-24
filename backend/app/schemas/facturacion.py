@@ -58,6 +58,7 @@ class DocumentoFiscalOut(BaseModel):
     concepto: str | None = None
     created_at: datetime | None = None
     cliente: str | None = None
+    telefono_cliente: str | None = None
     respuesta_dian: str | None = None
 
     class Config:

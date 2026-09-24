@@ -161,6 +161,17 @@ r = C.get("/reportes/vendedores", headers=H)
 assert r.status_code == 200, r.text
 print("vendedores OK:", [(x["vendedor"], round(x["ventas"]), x["comision"]) for x in r.json()])
 
+# -- Metas del negocio: config + endpoint /reportes/metas --
+C.put("/configuracion/general/pos.meta_diaria?valor=5000", headers=H)
+C.put("/configuracion/general/pos.meta_mensual?valor=100000", headers=H)
+r = C.get("/reportes/metas", headers=H)
+assert r.status_code == 200, r.text
+meta = r.json()
+assert "ventas_hoy" in meta and "avance_diario_pct" in meta and "meta_mensual" in meta, meta
+assert isinstance(meta["ranking_vendedores"], list), meta
+assert meta["meta_diaria"] == 5000 and meta["meta_mensual"] == 100000, meta
+print("metas del negocio OK:", {k: meta[k] for k in ("ventas_hoy", "avance_diario_pct", "avance_mensual_pct", "vs_ayer_pct")})
+
 # -- Auditoria --
 r = C.get("/reportes/auditoria", headers=H)
 assert r.status_code == 200 and len(r.json()) > 0, r.text

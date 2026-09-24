@@ -5,6 +5,13 @@ function formatMoney(n) {
   return new Intl.NumberFormat("es-CO", { style: "currency", currency: "COP", maximumFractionDigits: 0 }).format(n || 0);
 }
 
+const PERIODICIDADES = [
+  ["diaria", "Diaria"],
+  ["semanal", "Semanal"],
+  ["quincenal", "Quincenal"],
+  ["mensual", "Mensual"],
+];
+
 export default function Cartera() {
   const [tab, setTab] = useState("cartera");
   const [recibir, setRecibir] = useState({ total_cartera: 0, clientes: [] });
@@ -26,6 +33,23 @@ export default function Cartera() {
   });
   const [detAcuerdo, setDetAcuerdo] = useState(null);
 
+  const [recurrentes, setRecurrentes] = useState([]);
+  const [productos, setProductos] = useState([]);
+  const [recForm, setRecForm] = useState({
+    cliente_id: "",
+    periodicidad: "mensual",
+    dia: "1",
+    descripcion: "",
+    tipo: "credito",
+    medio_pago: "efectivo",
+    descuento_global: "0",
+    proxima_fecha: "",
+    items: [{ producto_id: "", cantidad: "1", precio: "" }],
+  });
+  const [recMsg, setRecMsg] = useState("");
+  const [recordatorio, setRecordatorio] = useState({ dias_mora: "5", activo: false, hora: "09:00" });
+  const [envio, setEnvio] = useState(null);
+
   async function load() {
     api("/cartera/cuentas-cobrar").then(setRecibir).catch(() => {});
     api("/cartera/cuentas-pagar").then(setPagar).catch(() => {});
@@ -35,11 +59,23 @@ export default function Cartera() {
     load();
     api("/acuerdos-pago").then(setAcuerdos).catch(() => {});
     api("/clientes").then(setClientes).catch(() => {});
+    api("/productos").then(setProductos).catch(() => {});
   }, []);
 
   useEffect(() => {
     if (tab === "acuerdos") api("/acuerdos-pago").then(setAcuerdos).catch(() => {});
     if (tab === "cobranza") api("/cartera/cobranza").then(setCobranza).catch(() => {});
+    if (tab === "recurrentes") {
+      api("/recurrentes").then(setRecurrentes).catch(() => {});
+      api("/configuracion/general").then((cfg) => {
+        const get = (k) => cfg.find((c) => c.clave === k)?.valor;
+        setRecordatorio({
+          dias_mora: get("cartera.recordatorio_dias") || "5",
+          activo: ["1", "true", "si", "sí", "on", "yes"].includes(String(get("cartera.recordatorio_activo") || "").toLowerCase()) || get("cartera.recordatorio_activo") === "1",
+          hora: get("cartera.recordatorio_hora") || "09:00",
+        });
+      }).catch(() => {});
+    }
   }, [tab]);
 
   async function crearAcuerdo(e) {
@@ -118,20 +154,117 @@ export default function Cartera() {
     }
   }
 
+  function setItemLine(idx, campo, valor) {
+    const items = recForm.items.map((it, i) => (i === idx ? { ...it, [campo]: valor } : it));
+    setRecForm({ ...recForm, items });
+  }
+
+  function addItemLine() {
+    setRecForm({ ...recForm, items: [...recForm.items, { producto_id: "", cantidad: "1", precio: "" }] });
+  }
+
+  function removeItemLine(idx) {
+    setRecForm({ ...recForm, items: recForm.items.filter((_, i) => i !== idx) });
+  }
+
+  async function crearRecurrente(e) {
+    e.preventDefault();
+    setError("");
+    setRecMsg("");
+    try {
+      const items = recForm.items
+        .filter((it) => it.producto_id)
+        .map((it) => ({ producto_id: Number(it.producto_id), cantidad: Number(it.cantidad) || 1, precio: it.precio ? Number(it.precio) : null }));
+      const res = await api("/recurrentes", {
+        method: "POST",
+        body: JSON.stringify({
+          empresa_id: 1,
+          cliente_id: recForm.cliente_id ? Number(recForm.cliente_id) : null,
+          periodicidad: recForm.periodicidad,
+          dia: Number(recForm.dia) || 1,
+          descripcion: recForm.descripcion,
+          items,
+          descuento_global: Number(recForm.descuento_global) || 0,
+          tipo: recForm.tipo,
+          medio_pago: recForm.medio_pago,
+          proxima_fecha: recForm.proxima_fecha || null,
+        }),
+      });
+      setRecurrentes((prev) => [res, ...prev]);
+      setRecMsg(`Factura recurrente #${res.id} creada · próximo ${res.proxima_fecha}`);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function ejecutarRecurrente(id) {
+    setError("");
+    setRecMsg("");
+    try {
+      const r = await api(`/recurrentes/${id}/ejecutar`, { method: "POST" });
+      setRecMsg(`Ejecutada → ${r.numero} por ${formatMoney(r.total)}`);
+      setRecurrentes(await api("/recurrentes"));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function toggleRecurrente(rr) {
+    setError("");
+    try {
+      const res = await api(`/recurrentes/${rr.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ activo: !rr.activo }),
+      });
+      setRecurrentes((prev) => prev.map((x) => (x.id === res.id ? res : x)));
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function enviarRecordatorios() {
+    setError("");
+    setRecMsg("");
+    try {
+      const res = await api("/recurrentes/recordatorios/enviar", {
+        method: "POST",
+        body: JSON.stringify({ dias_mora: Number(recordatorio.dias_mora) || 1, medio: "whatsapp" }),
+      });
+      setEnvio(res);
+      setRecMsg(`${res.enviados} recordatorio(s) enviado(s) a ${res.clientes.length} cliente(s)`);
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  async function guardarRecordatorioAuto() {
+    setError("");
+    try {
+      await api(`/configuracion/general/cartera.recordatorio_activo?valor=${recordatorio.activo ? "1" : "0"}`, { method: "PUT" });
+      await api(`/configuracion/general/cartera.recordatorio_dias?valor=${encodeURIComponent(recordatorio.dias_mora)}`, { method: "PUT" });
+      await api(`/configuracion/general/cartera.recordatorio_hora?valor=${encodeURIComponent(recordatorio.hora)}`, { method: "PUT" });
+      setRecMsg("Recordatorios automáticos guardados");
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
   return (
     <div className="page">
       <div className="page-header">
         <h1>Cartera</h1>
         <div className="tabs">
-          {["cartera", "cobranza", "acuerdos"].map((t) => (
+          {["cartera", "cobranza", "recurrentes", "acuerdos"].map((t) => (
             <button key={t} className={`btn ${tab === t ? "btn-primary" : ""}`} onClick={() => setTab(t)}>
-              {t === "cartera" ? "Cartera" : t === "cobranza" ? "Cobranza" : "Acuerdos de pago"}
+              {t === "cartera" ? "Cartera" : t === "cobranza" ? "Cobranza" : t === "recurrentes" ? "Recurrentes" : "Acuerdos de pago"}
             </button>
           ))}
         </div>
       </div>
 
       {error && <div className="error">{error}</div>}
+
+      {recMsg && <div className="notice" style={{ background: "rgba(14,159,116,.1)", color: "#0b7a59", padding: "10px 14px", borderRadius: 8, marginBottom: 16 }}>{recMsg}</div>}
 
       {tab === "cobranza" && (
         <>
@@ -162,6 +295,139 @@ export default function Cartera() {
             </div>
           ))}
           {cobranza === null && <p className="muted">Cargando cobranza…</p>}
+
+          <div className="card" style={{ marginTop: 20 }}>
+            <h3 style={{ fontSize: 15, marginBottom: 12 }}>Recordatorios de cobro (WhatsApp)</h3>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div>
+                <label>Días de mora</label>
+                <input type="number" min="0" style={{ width: 90 }} value={recordatorio.dias_mora} onChange={(e) => setRecordatorio({ ...recordatorio, dias_mora: e.target.value })} />
+              </div>
+              <button className="btn btn-primary" onClick={enviarRecordatorios}>Enviar ahora</button>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: 4 }}>
+                <input type="checkbox" checked={recordatorio.activo} onChange={(e) => setRecordatorio({ ...recordatorio, activo: e.target.checked })} style={{ width: "auto" }} />
+                <label style={{ margin: 0 }}>Automático diario ({recordatorio.hora})</label>
+              </div>
+              <button className="btn btn-secondary" onClick={guardarRecordatorioAuto}>Guardar</button>
+            </div>
+            <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
+              Clientes con saldo pendiente de más de {recordatorio.dias_mora} días reciben recordatorio por WhatsApp al teléfono registrado.
+            </p>
+            {envio && (
+              <div style={{ marginTop: 10 }}>
+                <strong>{envio.enviados} enviado(s)</strong> a {envio.clientes.length} cliente(s):
+                <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                  {envio.clientes.slice(0, 8).map((c, i) => (
+                    <li key={i}>{c.cliente} · {formatMoney(c.saldo)} ({c.ventas.length} facturas)</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {tab === "recurrentes" && (
+        <>
+          <form onSubmit={crearRecurrente} className="card" style={{ marginBottom: 20 }}>
+            <h3 style={{ fontSize: 15, marginBottom: 12 }}>Nueva factura recurrente</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12, marginBottom: 12 }}>
+              <div>
+                <label>Cliente</label>
+                <select value={recForm.cliente_id} onChange={(e) => setRecForm({ ...recForm, cliente_id: e.target.value })}>
+                  <option value="">— Sin cliente —</option>
+                  {clientes.map((c) => (
+                    <option key={c.id} value={c.id}>{c.nombre}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>Periodicidad</label>
+                <select value={recForm.periodicidad} onChange={(e) => setRecForm({ ...recForm, periodicidad: e.target.value })}>
+                  {PERIODICIDADES.map(([v, n]) => (
+                    <option key={v} value={v}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label>{recForm.periodicidad === "semanal" ? "Día semana (0=domingo)" : "Día mes (1-28)"}</label>
+                <input type="number" min={recForm.periodicidad === "semanal" ? 0 : 1} max={recForm.periodicidad === "semanal" ? 6 : 28} value={recForm.dia} onChange={(e) => setRecForm({ ...recForm, dia: e.target.value })} />
+              </div>
+              <div>
+                <label>Tipo</label>
+                <select value={recForm.tipo} onChange={(e) => setRecForm({ ...recForm, tipo: e.target.value })}>
+                  <option value="credito">Crédito (alimenta cartera)</option>
+                  <option value="contado">Contado</option>
+                </select>
+              </div>
+              {recForm.tipo === "contado" && (
+                <div>
+                  <label>Medio de pago</label>
+                  <select value={recForm.medio_pago} onChange={(e) => setRecForm({ ...recForm, medio_pago: e.target.value })}>
+                    {["efectivo", "tarjeta", "nequi", "daviplata", "breb", "transferencia"].map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div><label>Descuento (%)</label><input type="number" min="0" value={recForm.descuento_global} onChange={(e) => setRecForm({ ...recForm, descuento_global: e.target.value })} /></div>
+              <div><label>Primera fecha</label><input type="date" value={recForm.proxima_fecha} onChange={(e) => setRecForm({ ...recForm, proxima_fecha: e.target.value })} /></div>
+              <div style={{ gridColumn: recForm.periodicidad === "semanal" ? undefined : "span 1" }}>
+                <label>Descripción</label>
+                <input value={recForm.descripcion} placeholder="Ej: mensualidad gimnasio" onChange={(e) => setRecForm({ ...recForm, descripcion: e.target.value })} />
+              </div>
+            </div>
+            <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>Productos:</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {recForm.items.map((it, idx) => (
+                <div key={idx} style={{ display: "grid", gridTemplateColumns: "1fr 110px 130px 40px", gap: 8 }}>
+                  <select value={it.producto_id} onChange={(e) => setItemLine(idx, "producto_id", e.target.value)}>
+                    <option value="">Seleccionar producto...</option>
+                    {productos
+                      .filter((p) => p.activo)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>{p.nombre}</option>
+                      ))}
+                  </select>
+                  <input type="number" min="1" step="any" placeholder="Cantidad" value={it.cantidad} onChange={(e) => setItemLine(idx, "cantidad", e.target.value)} />
+                  <input type="number" min="0" step="any" placeholder="Precio (vacío=venta)" value={it.precio} onChange={(e) => setItemLine(idx, "precio", e.target.value)} />
+                  <button type="button" className="btn btn-ghost" onClick={() => removeItemLine(idx)} disabled={recForm.items.length === 1}>✕</button>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+              <button type="button" className="btn btn-secondary" onClick={addItemLine}>+ Agregar producto</button>
+              <button className="btn btn-primary" type="submit">Crear recurrente</button>
+            </div>
+          </form>
+
+          <h2 style={{ fontSize: 16, marginBottom: 10 }}>Plantillas recurrentes</h2>
+          <table className="table">
+            <thead>
+              <tr><th>#</th><th>Cliente</th><th>Descripción</th><th>Periodicidad</th><th>Próximo</th><th>Último</th><th>Estimado</th><th>Estado</th><th></th></tr>
+            </thead>
+            <tbody>
+              {recurrentes.map((r) => (
+                <tr key={r.id} style={{ opacity: r.activo ? 1 : 0.55 }}>
+                  <td>#{r.id}</td>
+                  <td><strong>{r.cliente_nombre || "—"}</strong></td>
+                  <td>{r.descripcion || r.periodicidad}</td>
+                  <td className="muted" style={{ textTransform: "capitalize" }}>{r.periodicidad} · día {r.dia}</td>
+                  <td>{r.proxima_fecha || "—"}</td>
+                  <td>{r.ultima_fecha || "—"}{r.ultima_venta_id ? ` (V-${String(r.ultima_venta_id).padStart(6, "0")})` : ""}</td>
+                  <td><strong>{formatMoney(r.total_estimado)}</strong></td>
+                  <td><span className={`badge ${r.activo ? "badge-success" : "badge-warning"}`}>{r.activo ? "activa" : "pausada"}</span></td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="btn btn-sm btn-ghost" onClick={() => ejecutarRecurrente(r.id)} title="Generar ahora">Generar</button>
+                      <button className="btn btn-sm btn-ghost" onClick={() => toggleRecurrente(r)}>{r.activo ? "Pausar" : "Activar"}</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {recurrentes.length === 0 && <tr><td colSpan={9} className="muted" style={{ textAlign: "center", padding: 20 }}>Sin plantillas recurrentes. Crea la primera arriba.</td></tr>}
+            </tbody>
+          </table>
         </>
       )}
 
@@ -206,7 +472,7 @@ export default function Cartera() {
                   <td><strong>{ac.cliente}</strong></td>
                   <td>{formatMoney(ac.monto_total)}</td>
                   <td>{formatMoney(ac.abonado)}</td>
-                  <td><strong style={{ color: "#4f46e5" }}>{formatMoney(ac.saldo)}</strong></td>
+                  <td><strong style={{ color: "#0e9f74" }}>{formatMoney(ac.saldo)}</strong></td>
                   <td>
                     <span className={`badge ${ac.estado === "pagado" ? "badge-success" : ac.estado === "activo" && ac.abonado > 0 ? "badge-info" : "badge-warning"}`}>
                       {ac.estado}
@@ -236,11 +502,11 @@ export default function Cartera() {
       <div style={{ display: "flex", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
         <div className="card" style={{ flex: 1, minWidth: 200 }}>
           <div className="muted">Por cobrar (clientes)</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: "#4f46e5" }}>{formatMoney(recibir.total_cartera)}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: "#0e9f74" }}>{formatMoney(recibir.total_cartera)}</div>
         </div>
         <div className="card" style={{ flex: 1, minWidth: 200 }}>
           <div className="muted">Por pagar (proveedores)</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: "#4f46e5" }}>{formatMoney(pagar.total_deuda)}</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: "#0e9f74" }}>{formatMoney(pagar.total_deuda)}</div>
         </div>
       </div>
 
@@ -341,7 +607,7 @@ export default function Cartera() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 10, marginBottom: 12 }}>
               <div>Monto total<br /><strong>{formatMoney(detAcuerdo.monto_total)}</strong></div>
               <div>Abonado<br /><strong>{formatMoney(detAcuerdo.abonado)}</strong></div>
-              <div>Saldo<br /><strong style={{ color: "#4f46e5" }}>{formatMoney(detAcuerdo.saldo)}</strong></div>
+              <div>Saldo<br /><strong style={{ color: "#0e9f74" }}>{formatMoney(detAcuerdo.saldo)}</strong></div>
               <div>Estado<br /><span className="badge">{detAcuerdo.estado}</span></div>
               <div>Periodicidad<br /><strong>{detAcuerdo.periodicidad}</strong></div>
             </div>

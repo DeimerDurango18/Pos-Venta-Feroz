@@ -65,6 +65,16 @@ function TablaGenerica({ data }) {
   );
 }
 
+const EXP_NOMBRES = {
+  "ventas-detallado": "🧾 Ventas detallado",
+  "ventas-por-producto": "📦 Ventas por producto",
+  ventas: "💵 Ventas simple",
+  cartera: "💰 Cartera (cxc)",
+  gastos: "💸 Gastos",
+  compras: "🛒 Compras",
+  cierres: "🔒 Cierres de caja",
+};
+
 function Seccion({ titulo, children, acciones }) {
   return (
     <div style={{ marginBottom: 24 }}>
@@ -128,6 +138,21 @@ export default function Reportes() {
   const [provSel, setProvSel] = useState("");
   const [provCat, setProvCat] = useState([]);
   const [provHist, setProvHist] = useState(null);
+  const [expDesde, setExpDesde] = useState("");
+  const [expHasta, setExpHasta] = useState("");
+
+  function limpiarRango() {
+    setExpDesde("");
+    setExpHasta("");
+  }
+
+  function exportar(key) {
+    const params = new URLSearchParams({ formato: "xls" });
+    if (expDesde) params.set("desde", expDesde);
+    if (expHasta) params.set("hasta", expHasta);
+    const q = params.toString();
+    downloadFile(`/reportes/exportar/${key}?${q}`, `${key}.xls`).catch((e) => setError(e.message));
+  }
 
   useEffect(() => {
     if (tab === "proveedores") {
@@ -270,11 +295,27 @@ export default function Reportes() {
 
       {error && <div className="error">{error}</div>}
 
-      <div className="chip" style={{ marginBottom: 16, display: "inline-block" }}>
-        Exportar:{" "}
-        <button className="btn btn-secondary" style={{ marginLeft: 6 }} onClick={() => downloadFile("/reportes/exportar/ventas-por-producto?formato=xls", "ventas-por-producto.xls").catch((e) => setError(e.message))}>Ventas por producto (XLS)</button>{" "}
-        <button className="btn btn-secondary" onClick={() => downloadFile("/reportes/exportar/ventas-por-producto?formato=pdf", "ventas-por-producto.pdf").catch((e) => setError(e.message))}>Ventas por producto (PDF)</button>{" "}
-        <button className="btn btn-secondary" onClick={() => downloadFile("/reportes/exportar/ventas?formato=xls", "ventas.xls").catch((e) => setError(e.message))}>Ventas (XLS)</button>
+      <div className="card sec" style={{ marginBottom: 20 }}>
+        <h3 className="card-title">📁 Exportación avanzada</h3>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginBottom: 12 }}>
+          <label style={{ fontSize: 12.5 }}>
+            Desde
+            <input type="date" className="input" value={expDesde} onChange={(e) => setExpDesde(e.target.value)} />
+          </label>
+          <label style={{ fontSize: 12.5 }}>
+            Hasta
+            <input type="date" className="input" value={expHasta} onChange={(e) => setExpHasta(e.target.value)} />
+          </label>
+          <button className="btn btn-sm btn-secondary" onClick={limpiarRango}>Limpiar</button>
+          <span className="muted" style={{ fontSize: 12.5 }}>Todos los archivos en formato XLS · opcional filtrar por rango de fechas</span>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {["ventas-detallado", "ventas-por-producto", "ventas", "cartera", "gastos", "compras", "cierres"].map((k) => (
+            <button key={k} className="btn btn-secondary btn-sm" onClick={() => exportar(k)}>
+              {EXP_NOMBRES[k]}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === "proveedores" && (
@@ -689,7 +730,7 @@ export default function Reportes() {
                   {[
                     ["Ingresos por ventas", resultados.ingresos_ventas, "#059669"],
                     ["Costo de ventas", resultados.costo_ventas, "#d97706"],
-                    ["Utilidad bruta", resultados.utilidad_bruta, "#4f46e5"],
+                    ["Utilidad bruta", resultados.utilidad_bruta, "#0e9f74"],
                     ["Gastos", resultados.gastos, "#dc2626"],
                     ["Utilidad neta", resultados.utilidad_neta, "#0284c7"],
                   ].map(([label, val, color]) => (
@@ -703,8 +744,8 @@ export default function Reportes() {
                 <div className="spinner" />
               )}
             </ChartCard>
-<ChartCard title="Flujo de caja diario (neto)" subtitle="Últimos 30 días" height={250} accent="#4f46e5">
-<TrendChart data={flujo.serie.map((s) => ({ dia: s.fecha, total: s.neto }))} accent="#4f46e5" />
+<ChartCard title="Flujo de caja diario (neto)" subtitle="Últimos 30 días" height={250} accent="#0e9f74">
+<TrendChart data={flujo.serie.map((s) => ({ dia: s.fecha, total: s.neto }))} accent="#0e9f74" />
             </ChartCard>
           </div>
 

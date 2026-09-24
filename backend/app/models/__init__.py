@@ -1,4 +1,5 @@
 from .organizacion import Empresa, Sucursal, PuntoVenta, Caja, Bodega, Ubicacion
+from .cotizaciones import CotizacionCliente, CotizacionClienteDetalle
 from .establecimiento import Establecimiento
 from .modelo_negocio import ModeloNegocio
 from .auth import Rol, Permiso, rol_permiso, Usuario, Sesion, RestablecerClave
@@ -40,6 +41,8 @@ from .domicilios import Repartidor, PedidoUbicacion, PedidoEstadoTiempo, RutaEnt
 from .restaurante import Comanda, ComandaDetalle, Mesa, ReservaMesa, Salon
 from .produccion import ProduccionOrden, ProduccionDetalle
 from .acuerdos import AcuerdoPago, CuotaAcuerdo
+from .recurrentes import FacturaRecurrente
+from .links_pago import LinkPago
 from .integraciones import (
     BackupRegistro,
     Balanza,
@@ -72,6 +75,8 @@ from .avanzado import (
 __all__ = [
     "Empresa",
     "Establecimiento",
+    "CotizacionCliente",
+    "CotizacionClienteDetalle",
     "ModeloNegocio",
     "Sucursal",
     "PuntoVenta",
@@ -139,6 +144,8 @@ __all__ = [
     "ProduccionDetalle",
     "AcuerdoPago",
     "CuotaAcuerdo",
+    "FacturaRecurrente",
+    "LinkPago",
     "Moneda",
     "Balanza",
     "CuentaBanco",

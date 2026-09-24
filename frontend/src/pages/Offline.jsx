@@ -195,7 +195,7 @@ export default function Offline() {
               <div>
                 <label>Medio de pago</label>
                 <select value={of.medio} onChange={(e) => setOf({ ...of, medio: e.target.value })}>
-                  {["efectivo", "tarjeta", "transferencia", "QR", "nequi", "daviplata", "otro"].map((m) => (
+                  {["efectivo", "tarjeta", "transferencia", "QR", "nequi", "daviplata", "breb", "otro"].map((m) => (
                     <option key={m} value={m}>{m}</option>
                   ))}
                 </select>

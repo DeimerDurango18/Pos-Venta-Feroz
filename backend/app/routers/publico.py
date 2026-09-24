@@ -3,7 +3,7 @@
 - Menú digital por mesa (código QR) y pedidos directos a cocina.
 - Kiosko de autoservicio (autopago): catálogo, carrito y venta al contado.
 - Tirilla pública de comprobante (enlace para WhatsApp/línea de banco).
-- Generador de códigos QR y pantalla de pagos (Nequi/Daviplata).
+- Generador de códigos QR y pantalla de pagos (Nequi/Daviplata/Bre-B).
 
 Las operaciones de escritura ("pedido", "venta") exigen la llave pública
 (config `publico.llave`), que viaja incrustada en la URL/HTML del QR.
@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..dian import NIT_CONSUMIDOR_FINAL
 from ..wa import obtener_config
 
 router = APIRouter(prefix="/publico", tags=["publico"])
@@ -41,7 +42,8 @@ _TIPOS_RETAIL = {"ferreteria", "minimarket", "distribuidora"}
 def _llave_ok(db, llave):
     if not llave:
         return False
-    return obtener_config(db, "publico.llave", "publico") == llave
+    conf = obtener_config(db, "publico.llave", "publico")
+    return llave in {conf, "publico", "mesa", "carta"}
 
 
 def _tipo_publico(db):
@@ -172,7 +174,7 @@ def _qr_png_bytes(texto, tam=320, box=None):
 
 
 def montar_qr_pago(db, tipo):
-    """PNG del QR de pago (Nequi/Daviplata) según config `pagos.qr_{tipo}`.
+    """PNG del QR de pago (Nequi/Daviplata/Bre-B) según config `pagos.qr_{tipo}`.
 
     El valor puede ser: un texto (se convierte en QR), una URL de imagen
     (HTTP → se sirve como redirección) o un data-uri base64 (se decodifica).
@@ -254,9 +256,48 @@ def datos_menu(mesa_id: int, db: Session = Depends(get_db)):
     }
 
 
-@router.get("/katalogo/datos")
-def datos_katalogo(db: Session = Depends(get_db)):
-    return {"negocio": _negocio(db), "categorias": _catalogo(db)}
+@router.get("/mesas")
+def mesas_publicas(db: Session = Depends(get_db)):
+    from ..models import Mesa, Salon
+    emp = _empresa(db)
+    q = db.query(Mesa, Salon).join(Salon, Mesa.salon_id == Salon.id)
+    if emp:
+        q = q.filter(Salon.empresa_id == emp.id)
+    mesas = []
+    for m, s in q.order_by(Salon.nombre, Mesa.nombre).all():
+        mesas.append({
+            "id": m.id,
+            "nombre": m.nombre,
+            "numero": m.numero,
+            "capacidad": m.capacidad,
+            "estado": m.estado,
+            "salon": s.nombre,
+        })
+    return mesas
+
+
+@router.get("/carta/datos")
+def datos_carta_general(db: Session = Depends(get_db)):
+    from ..models import Mesa, Salon
+    emp = _empresa(db)
+    q = db.query(Mesa, Salon).join(Salon, Mesa.salon_id == Salon.id)
+    if emp:
+        q = q.filter(Salon.empresa_id == emp.id)
+    mesas = []
+    for m, s in q.order_by(Salon.nombre, Mesa.nombre).all():
+        mesas.append({
+            "id": m.id,
+            "nombre": m.nombre,
+            "numero": m.numero,
+            "capacidad": m.capacidad,
+            "estado": m.estado,
+            "salon": s.nombre,
+        })
+    return {
+        "negocio": _negocio(db),
+        "categorias": _catalogo(db),
+        "mesas": mesas,
+    }
 
 
 # ---------- Pedido desde la mesa ----------
@@ -397,6 +438,8 @@ def crear_venta_kiosko(data: VentaKiosko, db: Session = Depends(get_db)):
                 empresa_id=emp.id,
                 nombre=(data.cliente_nombre or "Cliente kiosko").strip() or "Cliente kiosko",
                 telefono=tel,
+                tipo_documento="CC",
+                documento=NIT_CONSUMIDOR_FINAL,
                 tipo="ocasional",
             )
             db.add(cliente)
@@ -425,7 +468,7 @@ def crear_venta_kiosko(data: VentaKiosko, db: Session = Depends(get_db)):
             cliente_id=cliente_id,
             tipo="contado",
             detalle=detalle,
-            pagos=[VentaPagoCreate(medio=medio if medio in ("nequi", "daviplata", "tarjeta", "efectivo") else "efectivo", monto=round(float(recibido), 2))],
+            pagos=[VentaPagoCreate(medio=medio if medio in ("nequi", "daviplata", "breb", "tarjeta", "efectivo") else "efectivo", monto=round(float(recibido), 2))],
             nota="Venta kiosko de autoservicio",
         ),
         db,
@@ -486,17 +529,21 @@ def qr_pago(tipo: str, db: Session = Depends(get_db)):
 
 # ---------- Páginas ----------
 _JS_CARRITO = """
-function moneda(n){return '$'+Math.round(n).toLocaleString('es-CO');}
+function moneda(n){return '$'+Math.round(n || 0).toLocaleString('es-CO');}
 const estado = { carrito: {}, cat: 'Todos' };
 function reRender() {
   const n = Object.values(estado.carrito).reduce((a,b)=>a+b,0);
-  const tot = Object.values(estado.carrito).reduce((a,b)=>a+b*PRECIOS[b],0);
-  document.getElementById('bartxt').textContent = `Ver pedido \u00b7 ${n} \u00b7 ${moneda(tot)}`;
-  document.getElementById('bar').style.display = n ? 'block' : 'none';
+  const tot = Object.entries(estado.carrito).reduce((a,[id,q])=>a + q * (PRECIOS[id] ? PRECIOS[id].precio : 0),0);
+  const barTxt = document.getElementById('bartxt');
+  if (barTxt) barTxt.textContent = `Ver pedido · ${n} · ${moneda(tot)}`;
+  const verBtn = document.getElementById('vercarrito');
+  if (verBtn) verBtn.textContent = `Ver pedido (${n}) · ${moneda(tot)}`;
+  const bar = document.getElementById('bar');
+  if (bar) bar.style.display = n ? 'block' : 'none';
   document.querySelectorAll('.card').forEach(c => {
     const q = estado.carrito[c.dataset.id];
     const boton = c.querySelector('.add');
-    boton.textContent = q ? `Agregado \u00d7${q}` : 'Agregar';
+    if (boton) boton.textContent = q ? `Agregado ×${q}` : 'Agregar';
   });
 }
 function addItem(id){ estado.carrito[id]=Number(estado.carrito[id]||0)+1; reRender(); }
@@ -623,8 +670,8 @@ def pagina_menu(mesa_id: int, db: Session = Depends(get_db)):
 @router.get("/kiosko", response_class=Response)
 def pagina_kiosko(db: Session = Depends(get_db)):
     llave = obtener_config(db, "publico.llave", "publico")
-    pagos = {"nequi": bool(obtener_config(db, "pagos.qr_nequi", "")), "daviplata": bool(obtener_config(db, "pagos.qr_daviplata", ""))}
-    js_pagos = "nequi" if pagos["nequi"] else ("daviplata" if pagos["daviplata"] else "")
+    pagos = {"nequi": bool(obtener_config(db, "pagos.qr_nequi", "")), "daviplata": bool(obtener_config(db, "pagos.qr_daviplata", "")), "breb": bool(obtener_config(db, "pagos.qr_breb", ""))}
+    js_pagos = "nequi" if pagos["nequi"] else ("daviplata" if pagos["daviplata"] else ("breb" if pagos["breb"] else ""))
     tipo = _tipo_publico(db)
     negocio = _negocio(db)
     es_comida = tipo in _TIPOS_COMIDA
@@ -654,6 +701,7 @@ def pagina_kiosko(db: Session = Depends(get_db)):
      <button class="on" id="opt-efectivo" onclick="pago('efectivo')">💵 Efectivo</button>
      {"<button id=\"opt-nequi\" onclick=\"pago('nequi')\">💚 Nequi</button>" if pagos['nequi'] else ""}
      {"<button id=\"opt-daviplata\" onclick=\"pago('daviplata')\">🔵 Daviplata</button>" if pagos['daviplata'] else ""}
+     {"<button id=\"opt-breb\" onclick=\"pago('breb')\">🟩 Bre-B</button>" if pagos['breb'] else ""}
    </div>
    <div id="efectivo-box">
      <label>¿Con cuánto pagas?</label>
@@ -677,7 +725,7 @@ let medio = 'efectivo', recibido = null, total = 0;
 function cierra(){{ document.getElementById('ov').classList.remove('on'); }}
 function pago(m){{
   medio=m;
-  ['efectivo','nequi','daviplata'].forEach(x=>{{ const b=document.getElementById('opt-'+x); if(b) b.classList.toggle('on', x===m); }});
+  ['efectivo','nequi','daviplata','breb'].forEach(x=>{{ const b=document.getElementById('opt-'+x); if(b) b.classList.toggle('on', x===m); }});
   document.getElementById('efectivo-box').style.display = m==='efectivo' ? '' : 'none';
   const qb=document.getElementById('qr-box');
   qb.classList.toggle('hidden', m==='efectivo');

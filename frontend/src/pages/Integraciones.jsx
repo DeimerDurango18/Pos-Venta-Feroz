@@ -318,7 +318,7 @@ export default function Integraciones() {
           {peso && (
             <div className="card" style={{ marginTop: 16, textAlign: "center" }}>
               <div className="muted">Última lectura — {peso.balanza}</div>
-              <div style={{ fontSize: 40, fontWeight: 800, color: "#4f46e5" }}>{peso.peso} <small>kg</small></div>
+              <div style={{ fontSize: 40, fontWeight: 800, color: "#0e9f74" }}>{peso.peso} <small>kg</small></div>
               <div className="muted">{peso.estable ? "Peso estable ✓" : "Inestable"}</div>
             </div>
           )}
@@ -350,7 +350,7 @@ export default function Integraciones() {
                   <td><strong>{c.banco}</strong></td>
                   <td>{c.numero_cuenta || c.titular || "—"}</td>
                   <td>{c.tipo}</td>
-                  <td><strong style={{ color: "#4f46e5" }}>{formatMoney(c.saldo)}</strong></td>
+                  <td><strong style={{ color: "#0e9f74" }}>{formatMoney(c.saldo)}</strong></td>
                   <td><button className="btn btn-sm" onClick={() => editarCuenta(c)}>Editar</button></td>
                 </tr>
               ))}

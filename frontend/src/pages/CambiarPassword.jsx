@@ -45,7 +45,7 @@ export default function CambiarPassword() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "linear-gradient(130deg, #0f172a 0%, #1e293b 45%, #4338ca 100%)",
+        background: "linear-gradient(130deg, #043a2c 0%, #065f46 45%, #0b7a59 100%)",
       }}
     >
       <div
@@ -70,7 +70,7 @@ export default function CambiarPassword() {
               placeItems: "center",
               fontSize: 26,
               color: "#fff",
-              background: "linear-gradient(135deg, #6366f1, #4f46e5)",
+              background: "linear-gradient(135deg, #0e9f74, #0b7a59)",
             }}
           >
             🔐

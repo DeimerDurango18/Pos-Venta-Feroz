@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import api from "../api.js";
 import { KpiCard, ChartCard, Donut } from "../components/ui.jsx";
 
+const MEDIOS = ["efectivo", "tarjeta", "transferencia", "QR", "nequi", "daviplata", "breb", "otro"];
+
 export default function Restaurante() {
   const [salones, setSalones] = useState([]);
   const [mesas, setMesas] = useState([]);
@@ -15,10 +17,12 @@ export default function Restaurante() {
   const [msg, setMsg] = useState("");
   const [salonNombre, setSalonNombre] = useState("");
   const [mesaForm, setMesaForm] = useState({ salon_id: "", nombre: "", capacidad: 4 });
-  const [comandaForm, setComandaForm] = useState({ mesa_id: "", cliente_id: "", lineas: [{ producto_id: "", cantidad: 1, precio: 0, preparacion: "" }] });
-  const [reservaForm, setReservaForm] = useState({ mesa_id: "", cliente: "", telefono: "" });
+  const [comandaForm, setComandaForm] = useState({ mesa_id: "", cliente_id: "", lineas: [{ producto_id: "", cantidad: 1, precio: 0, preparacion: "", cortesia: false }] });
+  const [reservaForm, setReservaForm] = useState({ mesa_id: "", cliente: "", telefono: "", inicio: "" });
   const [detalle, setDetalle] = useState(null);
   const [qrMesa, setQrMesa] = useState(null);
+  const [splitComanda, setSplitComanda] = useState(null);
+  const [splitPartes, setSplitPartes] = useState([]);
 
   async function load() {
     api("/restaurante/salones").then(setSalones).catch(() => {});
@@ -30,8 +34,10 @@ export default function Restaurante() {
 
   useEffect(() => {
     load();
+    const t = setInterval(load, 4000);
     api("/productos").then(setProductos).catch(() => {});
     api("/clientes").then(setClientes).catch(() => {});
+    return () => clearInterval(t);
   }, []);
 
   async function submit(fn, okMsg) {
@@ -85,6 +91,7 @@ export default function Restaurante() {
         cantidad: Number(l.cantidad),
         precio: l.precio || productos.find((p) => p.id === Number(l.producto_id))?.precio_venta || 0,
         preparacion: l.preparacion || null,
+        cortesia: !!l.cortesia,
       }));
     await submit(
       () =>
@@ -98,7 +105,7 @@ export default function Restaurante() {
         }),
       "Comanda abierta"
     );
-    setComandaForm({ mesa_id: "", cliente_id: "", lineas: [{ producto_id: "", cantidad: 1, precio: 0, preparacion: "" }] });
+    setComandaForm({ mesa_id: "", cliente_id: "", lineas: [{ producto_id: "", cantidad: 1, precio: 0, preparacion: "", cortesia: false }] });
   }
 
   async function agregarLinea(comandaId) {
@@ -124,6 +131,81 @@ export default function Restaurante() {
     await submit(() => api(`/restaurante/comandas/${comandaId}/cerrar`, { method: "POST" }), "Comanda cerrada");
   }
 
+  async function toggleCortesia(comandaId, lineaId, valor) {
+    const accion = valor ? "Marcar como CORTESÍA (gratis) esta línea?" : "Quitar cortesía de esta línea?";
+    if (valor && !window.confirm(`${accion}\n\nVerifica el permiso del cliente/negocio antes de continuar.`)) return;
+    await submit(
+      () =>
+        api(`/restaurante/comandas/${comandaId}/lineas/${lineaId}/cortesia`, {
+          method: "POST",
+          body: JSON.stringify({ cortesia: valor }),
+        }),
+      valor ? "Cortesía aplicada" : "Cortesía quitada"
+    );
+    verDetalle(comandaId);
+  }
+
+  function abrirSplit(comanda) {
+    const lineasCobrables = comanda.detalle.filter((d) => !d.cortesia);
+    if (lineasCobrables.length === 0) {
+      setError("No hay líneas por cobrar (todas son cortesía).");
+      return;
+    }
+    setSplitComanda(comanda);
+    setSplitPartes([
+      { medio: "efectivo", linea_ids: lineasCobrables.map((d) => d.id) },
+      ...lineasCobrables.slice(1).map(() => ({ medio: "efectivo", linea_ids: [] })),
+    ]);
+  }
+
+  function agregarParte() {
+    setSplitPartes([...splitPartes, { medio: "efectivo", linea_ids: [] }]);
+  }
+
+  function quitarParte(idx) {
+    const sobrantes = splitPartes[idx].linea_ids;
+    const next = splitPartes.filter((_, i) => i !== idx);
+    if (sobrantes.length && next.length) next[0].linea_ids = [...next[0].linea_ids, ...sobrantes];
+    setSplitPartes(next);
+  }
+
+  function toggleLineaParte(idx, lineaId) {
+    setSplitPartes(
+      splitPartes.map((p, i) =>
+        i === idx
+          ? {
+              ...p,
+              linea_ids: p.linea_ids.includes(lineaId)
+                ? p.linea_ids.filter((x) => x !== lineaId)
+                : [...p.linea_ids, lineaId],
+            }
+          : p
+      )
+    );
+  }
+
+  function totalParte(p) {
+    return (splitComanda?.detalle || [])
+      .filter((d) => p.linea_ids.includes(d.id))
+      .reduce((a, d) => a + (d.precio || 0) * (d.cantidad || 1), 0);
+  }
+
+  async function confirmarSplit() {
+    const partes = splitPartes.map((p) => ({ linea_ids: p.linea_ids, medio: p.medio }));
+    const sinLineas = partes.filter((p) => p.linea_ids.length === 0);
+    if (sinLineas.length > 0) {
+      setError("Hay partes sin líneas asignadas. Quita las partes vacías.");
+      return;
+    }
+    await submit(
+      () => api(`/restaurante/comandas/${splitComanda.id}/split`, { method: "POST", body: JSON.stringify({ partes }) }),
+      "Cuenta dividida"
+    );
+    setSplitComanda(null);
+    setDetalle(null);
+    setSplitPartes([]);
+  }
+
   async function crearReserva(e) {
     e.preventDefault();
     await submit(
@@ -134,7 +216,22 @@ export default function Restaurante() {
         }),
       "Reserva creada"
     );
-    setReservaForm({ mesa_id: "", cliente: "", telefono: "" });
+    setReservaForm({ mesa_id: "", cliente: "", telefono: "", inicio: "" });
+  }
+
+  async function cambiarEstadoReserva(id, estado) {
+    setError("");
+    setMsg("");
+    try {
+      await api(`/restaurante/reservas/${id}/estado`, {
+        method: "POST",
+        body: JSON.stringify({ estado }),
+      });
+      setReservas(await api("/restaurante/reservas"));
+      setMsg(`Reserva ${estado}`);
+    } catch (e) {
+      setError(e.message);
+    }
   }
 
   async function verDetalle(comandaId) {
@@ -157,6 +254,7 @@ export default function Restaurante() {
           <p>Salones, mesas, comandas y reservas con control de consumos en tiempo real.</p>
         </div>
         <div className="hero-actions">
+          <button className="btn btn-primary" style={{ fontWeight: 800 }} onClick={() => window.open("/carta", "_blank")}>📱 Ver Carta Digital</button>
           <button className="btn" onClick={() => setTab("salones")}>🍽️ Salones</button>
           <button className="btn" onClick={() => setTab("comandas")}>🧾 Comandas</button>
           <button className="btn" onClick={() => setTab("cocina")}>👨‍🍳 Cocina</button>
@@ -266,11 +364,15 @@ export default function Restaurante() {
                 </select>
                 <input type="number" min={1} style={{ width: 80 }} value={l.cantidad} onChange={(e) => setLinea(i, "cantidad", e.target.value)} />
                 <input placeholder="Preparación (crudo…)" value={l.preparacion} onChange={(e) => setLinea(i, "preparacion", e.target.value)} />
+                <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5, color: "var(--ink)", margin: 0 }}>
+                  <input type="checkbox" checked={!!l.cortesia} onChange={(e) => setLinea(i, "cortesia", e.target.checked)} style={{ width: "auto" }} />
+                  Cortesía
+                </label>
                 <button type="button" className="btn btn-sm" onClick={() => setComandaForm({ ...comandaForm, lineas: comandaForm.lineas.filter((_, x) => x !== i) })}>Quitar</button>
               </div>
             ))}
             <div style={{ display: "flex", gap: 10 }}>
-              <button type="button" className="btn" onClick={() => setComandaForm({ ...comandaForm, lineas: [...comandaForm.lineas, { producto_id: "", cantidad: 1, precio: 0, preparacion: "" }] })}>+ Línea</button>
+              <button type="button" className="btn" onClick={() => setComandaForm({ ...comandaForm, lineas: [...comandaForm.lineas, { producto_id: "", cantidad: 1, precio: 0, preparacion: "", cortesia: false }] })}>+ Línea</button>
               <button className="btn btn-primary">Abrir comanda</button>
             </div>
           </form>
@@ -289,8 +391,9 @@ export default function Restaurante() {
                   <td>${c.total.toLocaleString("es-CO")}</td>
                   <td style={{ fontSize: 12 }}>
                     {c.detalle.map((d) => (
-                      <div key={d.id}>
+                      <div key={d.id} style={d.cortesia ? { opacity: 0.6 } : undefined}>
                         {d.cantidad} × {d.producto || d.producto_id}{d.preparacion ? ` (${d.preparacion})` : ""} {d.entregado ? " ✓" : ""}
+                        {d.cortesia && <span className="badge badge-success" style={{ marginLeft: 4 }}>Cortesía</span>}
                       </div>
                     ))}
                   </td>
@@ -304,6 +407,9 @@ export default function Restaurante() {
                             <button key={d.id} className="btn btn-sm" onClick={() => servir(c.id, d.id)}>Servir {d.id}</button>
                           ))}
                           <button className="btn btn-sm btn-primary" onClick={() => cerrar(c.id)}>Cerrar (cobrar)</button>
+                          {c.detalle.some((d) => !d.cortesia) && (
+                            <button className="btn btn-sm" onClick={() => abrirSplit(c)}>➗ Dividir</button>
+                          )}
                         </>
                       )}
                     </div>
@@ -326,21 +432,36 @@ export default function Restaurante() {
             </select>
             <input required placeholder="Cliente" value={reservaForm.cliente} onChange={(e) => setReservaForm({ ...reservaForm, cliente: e.target.value })} />
             <input placeholder="Teléfono" value={reservaForm.telefono} onChange={(e) => setReservaForm({ ...reservaForm, telefono: e.target.value })} />
+            <input type="datetime-local" value={reservaForm.inicio} onChange={(e) => setReservaForm({ ...reservaForm, inicio: e.target.value })} />
             <button className="btn btn-primary">Reservar</button>
           </form>
           <table className="table">
-            <thead><tr><th>Mesa</th><th>Cliente</th><th>Teléfono</th><th>Fecha</th><th>Estado</th></tr></thead>
+            <thead><tr><th>Mesa</th><th>Cliente</th><th>Teléfono</th><th>Fecha</th><th>Estado</th><th></th></tr></thead>
             <tbody>
               {reservas.length === 0 && (
-                <tr><td colSpan={5}>Sin reservas.</td></tr>
+                <tr><td colSpan={6} className="muted" style={{ textAlign: "center", padding: 16 }}>Sin reservas.</td></tr>
               )}
               {reservas.map((r) => (
-                <tr key={r.id}>
-                  <td>{mesas.find((m) => m.id === r.mesa_id)?.nombre || r.mesa_id}</td>
+                <tr key={r.id} style={{ opacity: r.estado === "cancelada" ? 0.5 : 1 }}>
+                  <td><strong>{mesas.find((m) => m.id === r.mesa_id)?.nombre || `Mesa #${r.mesa_id}`}</strong></td>
                   <td>{r.cliente}</td>
                   <td>{r.telefono || "-"}</td>
-                  <td style={{ fontSize: 12 }}>{r.inicio || "-"}</td>
-                  <td>{badge(r.estado)}</td>
+                  <td style={{ fontSize: 12 }}>
+                    {r.inicio ? new Date(r.inicio).toLocaleString("es-CO", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "-"}
+                  </td>
+                  <td>
+                    <span className={`badge ${r.estado === "completada" ? "badge-success" : r.estado === "cancelada" ? "badge-warning" : "badge-info"}`}>
+                      {r.estado}
+                    </span>
+                  </td>
+                  <td>
+                    {r.estado === "confirmada" && (
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <button className="btn btn-sm btn-ghost" onClick={() => cambiarEstadoReserva(r.id, "completada")}>Completar</button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => cambiarEstadoReserva(r.id, "cancelada")}>Cancelar</button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -367,26 +488,103 @@ export default function Restaurante() {
               <button className="btn btn-ghost" onClick={() => setDetalle(null)}>✕</button>
             </div>
             <p className="muted">
-              Estado: {badge(detalle.estado)} · Total <strong>{detalle.total.toLocaleString("es-CO")}</strong>
+              Estado: {badge(detalle.estado)} · Total <strong>${detalle.total.toLocaleString("es-CO")}</strong>
+              {Number(detalle.total_cortesia) > 0 && <> · Cortesías <strong className="text-success">${Number(detalle.total_cortesia).toLocaleString("es-CO")}</strong></>}
               {detalle.cliente_id && <> · Cliente #{detalle.cliente_id}</>}
               {detalle.created_at && <> · {new Date(detalle.created_at).toLocaleString()}</>}
             </p>
             <table className="table" style={{ marginTop: 10 }}>
-              <thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Subtotal</th><th>Preparación</th><th>Estado</th></tr></thead>
+              <thead><tr><th>Producto</th><th>Qty</th><th>Precio</th><th>Subtotal</th><th>Preparación</th><th>Estado</th>{detalle.estado === "abierta" && <th></th>}</tr></thead>
               <tbody>
                 {(detalle.detalle || []).map((d) => (
-                  <tr key={d.id}>
-                    <td>{d.producto || `#${d.producto_id}`}</td>
+                  <tr key={d.id} style={d.cortesia ? { opacity: 0.65 } : undefined}>
+                    <td>
+                      {d.producto || `#${d.producto_id}`}
+                      {d.cortesia && <span className="badge badge-success" style={{ marginLeft: 6 }}>Cortesía</span>}
+                    </td>
                     <td>{d.cantidad}</td>
                     <td>{d.precio.toLocaleString("es-CO")}</td>
-                    <td>{d.subtotal.toLocaleString("es-CO")}</td>
+                    <td><span style={d.cortesia ? { textDecoration: "line-through" } : undefined}>${((d.precio || 0) * (d.cantidad || 1)).toLocaleString("es-CO")}</span></td>
                     <td style={{ fontSize: 12 }}>{d.preparacion || "—"}</td>
                     <td>{d.entregado ? <span className="badge badge-success">Servida</span> : <span className="badge">Pendiente</span>}</td>
+                    {detalle.estado === "abierta" && (
+                      <td>
+                        <button
+                          className={`btn btn-sm ${d.cortesia ? "btn-secondary" : "btn-ghost"}`}
+                          onClick={() => toggleCortesia(detalle.id, d.id, !d.cortesia)}
+                        >
+                          {d.cortesia ? "Quitar cortesía" : "🎁 Cortesía"}
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 ))}
-                {(detalle.detalle || []).length === 0 && <tr><td colSpan={6} className="muted" style={{ textAlign: "center" }}>Sin líneas</td></tr>}
+                {(detalle.detalle || []).length === 0 && <tr><td colSpan={7} className="muted" style={{ textAlign: "center" }}>Sin líneas</td></tr>}
               </tbody>
             </table>
+            {detalle.estado === "abierta" && (
+              <div style={{ display: "flex", gap: 8, marginTop: 12, justifyContent: "flex-end" }}>
+                {detalle.detalle.some((d) => !d.cortesia) && (
+                  <button className="btn" onClick={() => abrirSplit(detalle)}>➗ Dividir cuenta</button>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {splitComanda && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "grid", placeItems: "center", zIndex: 1120, padding: 20 }}>
+          <div className="card" style={{ width: "min(720px, 100%)", maxHeight: "90vh", overflow: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <h3>➗ Dividir cuenta · {splitComanda.numero}</h3>
+              <button className="btn btn-ghost" onClick={() => { setSplitComanda(null); setSplitPartes([]); }}>✕</button>
+            </div>
+            <p className="muted" style={{ marginBottom: 12, fontSize: 13 }}>
+              Asigna cada producto de la comanda a una persona. Cada parte genera su propia venta y factura con el medio de pago indicado.
+              Las cortesías se excluyen automáticamente.
+            </p>
+            <div style={{ display: "grid", gap: 12 }}>
+              {splitPartes.map((parte, idx) => (
+                <div key={idx} style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
+                    <b style={{ flex: 1 }}>👤 Persona {idx + 1}</b>
+                    <select value={parte.medio} onChange={(e) => setSplitPartes(splitPartes.map((p, i) => (i === idx ? { ...p, medio: e.target.value } : p)))} style={{ width: 150 }}>
+                      {MEDIOS.map((m) => <option key={m} value={m}>{m}</option>)}
+                    </select>
+                    <button className="btn btn-sm btn-ghost" onClick={() => quitarParte(idx)} disabled={splitPartes.length <= 1}>✕ Persona</button>
+                  </div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {splitComanda.detalle.filter((d) => !d.cortesia).map((d) => {
+                      const activa = parte.linea_ids.includes(d.id);
+                      return (
+                        <label key={d.id} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, cursor: "pointer", opacity: activa ? 1 : 0.55 }}>
+                          <input
+                            type="checkbox"
+                            checked={activa}
+                            onChange={() => toggleLineaParte(idx, d.id)}
+                            disabled={activa && splitPartes.some((p, i) => i !== idx && p.linea_ids.includes(d.id))}
+                            style={{ width: "auto" }}
+                          />
+                          <span style={{ flex: 1 }}>{d.cantidad} × {d.producto || `#${d.producto_id}`}</span>
+                          <span className="muted">${((d.precio || 0) * (d.cantidad || 1)).toLocaleString("es-CO")}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div style={{ marginTop: 8, textAlign: "right", fontWeight: 700 }}>
+                    Subtotal: ${totalParte(parte).toLocaleString("es-CO")}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginTop: 14 }}>
+              <button className="btn btn-secondary" onClick={agregarParte}>+ Agregar persona</button>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn" onClick={() => { setSplitComanda(null); setSplitPartes([]); }}>Cancelar</button>
+                <button className="btn btn-primary" onClick={confirmarSplit}>Cobrar partes</button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -412,7 +610,7 @@ function QrMesaModal({ mesa, onClose }) {
   }, []);
   if (!mesa) return null;
   const base = baseUrl || window.location.origin;
-  const url = `${base}/publico/menu/${mesa.id}`;
+  const url = `${base}/carta/${mesa.id}`;
   const qrSrc = `/publico/qr?texto=${encodeURIComponent(url)}&tam=460`;
   async function copiar() {
     try {
@@ -429,7 +627,7 @@ function QrMesaModal({ mesa, onClose }) {
           <button className="btn btn-ghost" onClick={onClose}>✕</button>
         </div>
         <p className="muted" style={{ marginBottom: 12, fontSize: 13 }}>
-          El cliente escanea y pide directo desde su celular; el pedido llega a la cocina y a Restaurante.
+          El cliente escanea el QR o abre este enlace desde su celular para pedir directo a cocina.
         </p>
         <div style={{ background: "#fff", borderRadius: 14, padding: 14, display: "inline-block", marginBottom: 12 }}>
           <img src={qrSrc} alt={`QR mesa ${mesa.nombre}`} width={260} height={260} style={{ display: "block" }} />
@@ -437,7 +635,8 @@ function QrMesaModal({ mesa, onClose }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
           <input readOnly value={url} style={{ flex: 1, minWidth: 220, fontSize: 12 }} onFocus={(e) => e.target.select()} />
           <button className="btn btn-sm" onClick={copiar}>{copiado ? "✓ Copiado" : "Copiar"}</button>
-          <button className="btn btn-sm btn-primary" onClick={() => window.open(`/publico/qr?texto=${encodeURIComponent(url)}&tam=900`, "_blank")}>🖨️ Imprimir</button>
+          <button className="btn btn-sm btn-secondary" onClick={() => window.open(url, "_blank")}>👁️ Abrir carta</button>
+          <button className="btn btn-sm btn-primary" onClick={() => window.open(`/publico/qr?texto=${encodeURIComponent(url)}&tam=900`, "_blank")}>🖨️ Imprimir QR</button>
         </div>
       </div>
     </div>

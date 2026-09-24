@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -34,7 +34,8 @@ class ComandaDetalleCreate(BaseModel):
     producto_id: int
     cantidad: float = 1
     precio: float = 0
-    preparacion: str | None = None  # crudo/3/medio/termino/etc
+    preparacion: str | None = None
+    cortesia: bool = False
 
 
 class ComandaCreate(BaseModel):
@@ -192,9 +193,13 @@ def liberar_mesa(mesa_id: int, db: Session = Depends(get_db), usuario: Usuario =
 def _comanda_out(db, c):
     detalle = []
     total = 0.0
+    total_cortesia = 0.0
     for d in c.detalle:
         linea_total = float(d.precio or 0) * float(d.cantidad or 1)
-        total += linea_total
+        if d.cortesia:
+            total_cortesia += linea_total
+        else:
+            total += linea_total
         detalle.append(
             {
                 "id": d.id,
@@ -204,6 +209,7 @@ def _comanda_out(db, c):
                 "precio": float(d.precio or 0),
                 "preparacion": d.preparacion,
                 "entregado": bool(d.entregado),
+                "cortesia": bool(d.cortesia),
             }
         )
     return {
@@ -213,6 +219,7 @@ def _comanda_out(db, c):
         "cliente_id": c.cliente_id,
         "estado": c.estado,
         "total": total,
+        "total_cortesia": total_cortesia,
         "detalle": detalle,
     }
 
@@ -258,6 +265,7 @@ def crear_comanda(
                 cantidad=linea.cantidad,
                 precio=linea.precio,
                 preparacion=linea.preparacion,
+                cortesia=linea.cortesia,
                 entregado=False,
             )
         )
@@ -316,6 +324,7 @@ def agregar_a_comanda(
                 cantidad=linea.cantidad,
                 precio=linea.precio,
                 preparacion=linea.preparacion,
+                cortesia=linea.cortesia,
                 entregado=False,
             )
         )
@@ -339,17 +348,117 @@ def servir_linea(
     return {"linea_id": linea.id, "entregado": True}
 
 
-@router.post("/comandas/{comanda_id}/cerrar", status_code=201)
-def cerrar_comanda(
+class CortesiaToggle(BaseModel):
+    cortesia: bool
+
+
+@router.post("/comandas/{comanda_id}/lineas/{linea_id}/cortesia")
+def toggle_cortesia(
     comanda_id: int,
+    linea_id: int,
+    data: CortesiaToggle,
     db: Session = Depends(get_db),
     usuario: Usuario = Depends(get_current_user),
 ):
     comanda = _get_comanda(db, comanda_id, usuario.empresa_id)
     if comanda.estado != "abierta":
         raise HTTPException(400, "Comanda no válida")
-    total = sum(float(d.precio or 0) * float(d.cantidad or 1) for d in comanda.detalle)
+    linea = next((d for d in comanda.detalle if d.id == linea_id), None)
+    if not linea:
+        raise HTTPException(404, "Línea no encontrada")
+    linea.cortesia = data.cortesia
+    db.commit()
+    return _comanda_out(db, comanda)
+
+
+class SplitParte(BaseModel):
+    linea_ids: list[int]
+    medio: str = "efectivo"
+
+
+class SplitRequest(BaseModel):
+    partes: list[SplitParte]
+
+
+@router.post("/comandas/{comanda_id}/split", status_code=201)
+def split_comanda(
+    comanda_id: int,
+    data: SplitRequest,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    comanda = _get_comanda(db, comanda_id, usuario.empresa_id)
+    if comanda.estado != "abierta":
+        raise HTTPException(400, "Comanda no válida")
+    all_pay_lines = [d for d in comanda.detalle if not d.cortesia]
+    used_ids = set()
+    ventas_creadas = []
+    for parte in data.partes:
+        lineas = []
+        for lid in parte.linea_ids:
+            ln = next((d for d in comanda.detalle if d.id == lid), None)
+            if not ln:
+                raise HTTPException(404, f"Línea {lid} no encontrada")
+            if ln.cortesia:
+                raise HTTPException(400, f"Línea {lid} es cortesía, exclúyela del split")
+            if lid in used_ids:
+                raise HTTPException(400, f"Línea {lid} ya asignada a otra parte")
+            used_ids.add(lid)
+            lineas.append(ln)
+        subtotal = sum(float(d.precio or 0) * float(d.cantidad or 1) for d in lineas)
+        if subtotal <= 0:
+            continue
+        venta = crear_venta(
+            VentaCreate(
+                empresa_id=usuario.empresa_id,
+                sucursal_id=usuario.sucursal_id,
+                cliente_id=comanda.cliente_id,
+                tipo="contado",
+                caja_id=None,
+                vendedor_id=usuario.id,
+                detalle=[
+                    VentaDetalleCreate(
+                        producto_id=d.producto_id,
+                        cantidad=d.cantidad,
+                        precio=d.precio,
+                        descuento=0,
+                    )
+                    for d in lineas
+                ],
+                pagos=[VentaPagoCreate(medio=parte.medio, monto=round(subtotal, 2))],
+                nota=f"Split {comanda.numero}",
+            ),
+            db,
+            usuario,
+        )
+        ventas_creadas.append({"venta_id": venta.id, "numero": venta.numero, "total": round(subtotal, 2), "medio": parte.medio})
+    unassigned = [d.id for d in all_pay_lines if d.id not in used_ids]
+    if unassigned:
+        raise HTTPException(400, f"Líneas sin asignar: {unassigned}. Asigna todas las líneas antes de dividir.")
     mesa = db.get(Mesa, comanda.mesa_id)
+    comanda.estado = "cerrada"
+    if mesa:
+        mesa.estado = "disponible"
+        mesa.cliente_id = None
+        mesa.invitados = 0
+    db.commit()
+    return {"comanda_id": comanda.id, "estado": "cerrada", "ventas": ventas_creadas}
+
+
+@router.post("/comandas/{comanda_id}/cerrar", status_code=201)
+def cerrar_comanda(
+    comanda_id: int,
+    pagos: list[dict] | None = None,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    comanda = _get_comanda(db, comanda_id, usuario.empresa_id)
+    if comanda.estado != "abierta":
+        raise HTTPException(400, "Comanda no válida")
+    lineas_pago = [d for d in comanda.detalle if not d.cortesia]
+    total = sum(float(d.precio or 0) * float(d.cantidad or 1) for d in lineas_pago)
+    mesa = db.get(Mesa, comanda.mesa_id)
+    pagos_final = pagos or [{"medio": "efectivo", "monto": total}]
     venta = crear_venta(
         VentaCreate(
             empresa_id=usuario.empresa_id,
@@ -365,9 +474,9 @@ def cerrar_comanda(
                     precio=d.precio,
                     descuento=0,
                 )
-                for d in comanda.detalle
+                for d in lineas_pago
             ],
-            pagos=[VentaPagoCreate(medio="efectivo", monto=total)],
+            pagos=[VentaPagoCreate(medio=p.get("medio", "efectivo"), monto=float(p.get("monto", total))) for p in pagos_final],
             nota=f"Comanda {comanda.numero}",
         ),
         db,
@@ -414,8 +523,25 @@ def listar_reservas(
 
 @router.post("/reservas", status_code=201)
 def crear_reserva(data: ReservaCreate, db: Session = Depends(get_db), usuario: Usuario = Depends(get_current_user)):
-    _get_mesa(db, data.mesa_id, usuario.empresa_id)
+    mesa = _get_mesa(db, data.mesa_id, usuario.empresa_id)
+    if mesa.estado == "ocupada":
+        raise HTTPException(400, "La mesa está ocupada en este momento")
     inicio = data.inicio or datetime.now()
+    # Evitar doble reserva confirmada de la misma mesa el mismo día
+    desde = datetime.combine(inicio.date(), datetime.min.time())
+    hasta = datetime.combine(inicio.date() + timedelta(days=1), datetime.min.time())
+    conflicto = (
+        db.query(ReservaMesa)
+        .filter(
+            ReservaMesa.mesa_id == data.mesa_id,
+            ReservaMesa.estado.in_(["confirmada", "completada"]),
+            ReservaMesa.inicio >= desde,
+            ReservaMesa.inicio < hasta,
+        )
+        .first()
+    )
+    if conflicto:
+        raise HTTPException(400, f"La mesa ya tiene una {conflicto.estado} el {inicio.date()}")
     reserva = ReservaMesa(
         empresa_id=usuario.empresa_id,
         mesa_id=data.mesa_id,
@@ -426,7 +552,36 @@ def crear_reserva(data: ReservaCreate, db: Session = Depends(get_db), usuario: U
     )
     db.add(reserva)
     db.commit()
-    return {"id": reserva.id, "mesa_id": reserva.mesa_id, "cliente": reserva.cliente, "inicio": inicio.isoformat()}
+    db.refresh(reserva)
+    return {
+        "id": reserva.id,
+        "mesa_id": reserva.mesa_id,
+        "cliente": reserva.cliente,
+        "telefono": reserva.telefono,
+        "inicio": reserva.inicio.isoformat() if reserva.inicio else None,
+        "estado": reserva.estado,
+    }
+
+
+class ReservaEstadoIn(BaseModel):
+    estado: str  # confirmada | completada | cancelada
+
+
+@router.post("/reservas/{reserva_id}/estado")
+def cambiar_estado_reserva(
+    reserva_id: int,
+    data: ReservaEstadoIn,
+    db: Session = Depends(get_db),
+    usuario: Usuario = Depends(get_current_user),
+):
+    if data.estado not in ("confirmada", "completada", "cancelada"):
+        raise HTTPException(400, "Estado inválido")
+    reserva = db.get(ReservaMesa, reserva_id)
+    if not reserva or reserva.empresa_id != usuario.empresa_id:
+        raise HTTPException(404, "Reserva no encontrada")
+    reserva.estado = data.estado
+    db.commit()
+    return {"id": reserva.id, "estado": reserva.estado}
 
 # ---------- Seguridad ----------
 

@@ -183,6 +183,9 @@ export default function Clientes() {
               <td>{formatMoney(c.creditos)}</td>
               <td><span className={`badge ${c.activo ? "badge-success" : "badge-danger"}`}>{c.activo ? "Activo" : "Inactivo"}</span></td>
               <td>
+                <button className="btn btn-ghost" title="WhatsApp" disabled={!c.telefono} onClick={() => {
+                  window.open(`https://wa.me/${String(c.telefono).replace(/\D/g, "")}?text=${encodeURIComponent(`Hola ${c.nombre} 👋, le escribimos de parte del negocio.`)}`, "_blank");
+                }}>💬</button>
                 <button className="btn btn-ghost" title="Ver detalle" onClick={() => abrirDetalle(c)}>👁</button>
                 <button className="btn btn-ghost" title="Editar" onClick={() => setEditando({ ...c })}>✏️</button>
               </td>

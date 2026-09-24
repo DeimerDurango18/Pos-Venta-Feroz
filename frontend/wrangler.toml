@@ -1,0 +1,5 @@
+name = "pos-inventario-feroz-d"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-09-24"
+compatibility_flags = ["nodejs_compat"]
+not_found_handling = "single-page-application"

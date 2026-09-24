@@ -3,6 +3,7 @@ import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext.jsx";
 import { usePlan } from "../contexts/PlanContext.jsx";
 import { ITEMS, menuDePlan } from "../menus.js";
+import api from "../api.js";
 
 function useIsMobile() {
   const [mobile, setMobile] = useState(window.innerWidth <= 768);
@@ -30,6 +31,45 @@ export default function Layout() {
   useEffect(() => {
     if (isMobile) setSidebarOpen(false);
   }, [isMobile]);
+
+  const [online, setOnline] = useState(navigator.onLine);
+  const [installEvt, setInstallEvt] = useState(null);
+  const [pend, setPend] = useState(0);
+  const [fs, setFs] = useState(false);
+
+  useEffect(() => {
+    const onFs = () => setFs(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  const toggFs = () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen?.();
+  };
+
+  useEffect(() => {
+    const up = () => setOnline(navigator.onLine);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", up);
+    const onInstall = (e) => {
+      e.preventDefault();
+      setInstallEvt(e);
+    };
+    window.addEventListener("beforeinstallprompt", onInstall);
+    const t = setInterval(() => {
+      if (navigator.onLine)
+        api("/offline/pendientes")
+          .then((r) => setPend(Array.isArray(r) ? r.length : 0))
+          .catch(() => {});
+    }, 20000);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", up);
+      window.removeEventListener("beforeinstallprompt", onInstall);
+      clearInterval(t);
+    };
+  }, []);
 
   const closeSidebar = () => setSidebarOpen(false);
 
@@ -181,6 +221,33 @@ export default function Layout() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
             {!isMobile && <span className="chip">📅 {hoy}</span>}
+            {installEvt && (
+              <button
+                className="btn btn-sm"
+                style={{ background: "rgba(14,159,116,.14)", color: "var(--brand1)", boxShadow: "none", borderRadius: 10 }}
+                onClick={async () => {
+                  installEvt.prompt();
+                  try {
+                    const { outcome } = await installEvt.userChoice;
+                    if (outcome === "accepted") setInstallEvt(null);
+                  } catch {}
+                }}
+                title="Instalar como aplicación (PWA)"
+              >
+                ⬇ Instalar app
+              </button>
+            )}
+            <span
+              className="chip"
+              style={{ cursor: "pointer", background: online ? "rgba(16,185,129,.14)" : "rgba(225,29,72,.14)", color: online ? "#059669" : "#e11d48", fontWeight: 700 }}
+              onClick={() => navigate("/offline")}
+              title="Estado de conexión y ventas offline"
+            >
+              {online ? "🟢 En línea" : "🔴 Sin conexión"}
+              {pend > 0 ? ` · ${pend} 🗒` : ""}
+            </span>
+            <button className="theme-toggle" onClick={() => navigate("/")} title="Volver al inicio">🏠</button>
+            <button className="theme-toggle" onClick={toggFs} title={fs ? "Salir de pantalla completa" : "Usar pantalla completa"}>{fs ? "⤓" : "⛶"}</button>
             <button className="theme-toggle" onClick={() => setDark(!dark)} title={dark ? "Modo claro" : "Modo oscuro"}>
               {dark ? "☀️" : "🌙"}
             </button>

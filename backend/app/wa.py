@@ -259,6 +259,20 @@ def _loop():
                                 referencia=f"alerta-{clave_hora}",
                             )
                             guardar_config(db, "pos.ultima_alerta", clave_hora)
+                # Facturas recurrentes vencidas (genera venta + alimenta cartera)
+                try:
+                    from ..routers.recurrentes import procesar_facturas_recurrentes
+
+                    procesar_facturas_recurrentes(db)
+                except Exception:
+                    pass
+                # Recordatorios de cobro (una vez al día a la hora configurada)
+                try:
+                    from ..routers.recurrentes import procesar_recordatorios
+
+                    procesar_recordatorios(db)
+                except Exception:
+                    pass
             finally:
                 db.close()
         except Exception:

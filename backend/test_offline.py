@@ -32,10 +32,11 @@ print("== Offline, sincronización y pantalla de cliente ==")
 
 # Limpia cola de pendientes de corridas previas (evita veneno por re-intentos)
 from app.database import SessionLocal
-from app.models import PendienteSincronizacion
+from app.models import PendienteSincronizacion, Promocion
 
 with SessionLocal() as db:
     db.query(PendienteSincronizacion).delete()
+    db.query(Promocion).update({"activa": False})
     db.commit()
 
 # Producto propio y con stock para que la sincronización sea determinista

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import api, { openWindow } from "../api.js";
+import { WhatsAppButton } from "../components/ui.jsx";
 
 function formatMoney(n) {
   return new Intl.NumberFormat("es-CO", {
@@ -40,6 +41,14 @@ function beep(ok = true) {
   }
 }
 
+function vibrar(ok = true) {
+  try {
+    if (navigator.vibrate) navigator.vibrate(ok ? [40, 30, 40] : 120);
+  } catch {
+    /* vibración no disponible */
+  }
+}
+
 const MEDIOS = [
   { valor: "efectivo", icono: "💵", etiqueta: "Efectivo" },
   { valor: "tarjeta", icono: "💳", etiqueta: "Tarjeta" },
@@ -47,6 +56,7 @@ const MEDIOS = [
   { valor: "QR", icono: "📲", etiqueta: "QR" },
   { valor: "nequi", icono: "📱", etiqueta: "Nequi" },
   { valor: "daviplata", icono: "💸", etiqueta: "Daviplata" },
+  { valor: "breb", icono: "🟩", etiqueta: "Bre-B" },
   { valor: "otro", icono: "🛒", etiqueta: "Otro" },
 ];
 
@@ -60,6 +70,12 @@ const TIPO_LABEL = {
 };
 
 export default function PuntoVenta() {
+  const searchRef = useRef(null);
+  const codigoRef = useRef(null);
+  const flashTimerRef = useRef(null);
+  const actionsRef = useRef({});
+  const [kiosko, setKiosko] = useState(false);
+  const [flashId, setFlashId] = useState(null);
   const [productos, setProductos] = useState([]);
   const [stock, setStock] = useState({});
   const [clientes, setClientes] = useState([]);
@@ -94,6 +110,10 @@ export default function PuntoVenta() {
   const [pesoModal, setPesoModal] = useState(null);
   const [pesoVal, setPesoVal] = useState("");
   const [pesando, setPesando] = useState(false);
+  const [comandasModal, setComandasModal] = useState(false);
+  const [comandasLista, setComandasLista] = useState([]);
+  const [comandaActiva, setComandaActiva] = useState(null);
+  const [mesasMapa, setMesasMapa] = useState({});
   const [favs, setFavs] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("pos.favoritos") || "[]");
@@ -113,9 +133,6 @@ export default function PuntoVenta() {
   function toggleFav(id) {
     setFavs((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
-
-  const searchRef = useRef(null);
-  const codigoRef = useRef(null);
 
   useEffect(() => {
     api("/productos?activo=true").then(setProductos).catch(() => {});
@@ -147,18 +164,52 @@ export default function PuntoVenta() {
       } else if (e.key === "F4") {
         e.preventDefault();
         codigoRef.current?.focus();
+      } else if (e.key === "F8") {
+        e.preventDefault();
+        if (actionsRef.current.puedeCobrar) actionsRef.current.cobrar();
+        else beep(false);
       }
     };
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, []);
 
+  useEffect(() => {
+    actionsRef.current = { cobrar, puedeCobrar };
+  });
+
+  useEffect(() => {
+    const onFs = () => setKiosko(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.get("kiosko") === "1") {
+      document.documentElement.requestFullscreen().catch(() => {});
+    }
+    return () => document.removeEventListener("fullscreenchange", onFs);
+  }, []);
+
+  function toggleKiosko() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      document.documentElement
+        .requestFullscreen()
+        .catch(() => setError("Tu navegador no permite pantalla completa."));
+    }
+  }
+
   const subtotal = carrito.reduce((s, i) => s + i.precio * i.cantidad, 0);
+  const impuesto = carrito.reduce((s, i) => s + (i.precio * i.cantidad * (Number(i.impuesto) || 0)) / 100, 0);
   const desc = descTipo === "porcentaje" ? Math.round((subtotal * (Number(descuento) || 0)) / 100) : Number(descuento) || 0;
   const tip = Number(propina) || 0;
-  const total = Math.max(0, subtotal - desc - cuponDes + tip);
+  const total = Math.max(0, subtotal - desc - cuponDes + impuesto + tip);
   const rec = Number(recibido) || 0;
   const cambio = pagoMedio === "efectivo" && tipoVenta === "contado" ? Math.max(0, rec - total) : 0;
+
+  const puedeCobrar =
+    carrito.length > 0 &&
+    !(pagoMedio === "efectivo" && tipoVenta === "contado" && rec < total) &&
+    !((pagoMedio === "nequi" || pagoMedio === "daviplata" || pagoMedio === "breb") && !qrOk);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -168,7 +219,7 @@ export default function PuntoVenta() {
           items: carrito.map((i) => ({ nombre: i.nombre, cantidad: i.cantidad, subtotal: i.precio * i.cantidad })),
           subtotal,
           descuento: desc,
-          impuesto: 0,
+          impuesto: Math.round(impuesto),
           propina: tip,
           total,
           mensaje: "Aguarde · Su ticket sale al finalizar",
@@ -201,6 +252,7 @@ export default function PuntoVenta() {
       cantidad,
       es_peso: (p.tipo || "unidad") === "peso",
       es_compuesto: !!p.es_compuesto,
+      impuesto: Number(p.impuesto) || 0,
     };
   }
 
@@ -217,6 +269,10 @@ export default function PuntoVenta() {
 
   function agregarItem(p, cantidad = 1) {
     beep();
+    vibrar(true);
+    setFlashId(p.id);
+    window.clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashId(null), 650);
     setCarrito((prev) => {
       const idx = prev.findIndex((i) => i.producto_id === p.id);
       if (idx >= 0) {
@@ -282,6 +338,7 @@ export default function PuntoVenta() {
         setError("");
       } else {
         beep(false);
+        vibrar(false);
         setError(`No se encontró el código «${cod}»`);
       }
     } catch (err) {
@@ -376,6 +433,62 @@ export default function PuntoVenta() {
     openWindow("/pantalla/vista").catch((err) => setError(err.message));
   }
 
+  async function abrirSelectorComandas() {
+    setError("");
+    try {
+      const [coms, mesasData] = await Promise.all([
+        api("/restaurante/comandas?estado=abierta").catch(() => []),
+        api("/restaurante/mesas").catch(() => []),
+      ]);
+      const mapa = {};
+      (mesasData || []).forEach((m) => {
+        mapa[m.id] = m.nombre;
+      });
+      setMesasMapa(mapa);
+      setComandasLista(coms || []);
+      setComandasModal(true);
+    } catch (e) {
+      setError("No se pudieron cargar las comandas: " + e.message);
+    }
+  }
+
+  function cargarComandaEnPOS(com) {
+    if (!com || !com.detalle) return;
+    const itemsCargados = com.detalle.map((d) => {
+      const p = productos.find((prod) => prod.id === d.producto_id);
+      return {
+        producto_id: d.producto_id,
+        nombre: d.producto || (p ? p.nombre : `Producto #${d.producto_id}`),
+        codigo: p ? (p.sku || p.codigo_barras) : "",
+        precio: Number(d.precio || (p ? p.precio_venta : 0)),
+        precio_base: Number(p ? p.precio_venta : d.precio),
+        precio_mayorista: Number(p ? p.precio_mayorista : d.precio),
+        cantidad: Number(d.cantidad || 1),
+        impuesto: Number(p ? p.impuesto : 0),
+        es_peso: p ? p.tipo_unidad === "peso" : false,
+        es_compuesto: p ? p.es_compuesto : false,
+        preparacion: d.preparacion,
+      };
+    });
+
+    setCarrito(itemsCargados);
+    setComandaActiva({
+      id: com.id,
+      numero: com.numero,
+      mesa_id: com.mesa_id,
+      mesa_nombre: mesasMapa[com.mesa_id] || `Mesa #${com.mesa_id}`,
+    });
+
+    if (com.cliente_id) {
+      const c = clientes.find((cli) => cli.id === com.cliente_id);
+      if (c) seleccionarCliente(c);
+    }
+
+    setComandasModal(false);
+    setSuccess(`Comanda ${com.numero} (${mesasMapa[com.mesa_id] || 'Mesa'}) cargada al POS.`);
+    setTimeout(() => setSuccess(""), 3500);
+  }
+
   async function aplicarCupon() {
     setError("");
     setCuponInfo("");
@@ -454,7 +567,7 @@ export default function PuntoVenta() {
       setError("El monto recibido es menor al total. Ajusta la cantidad recibida.");
       return;
     }
-    if ((pagoMedio === "nequi" || pagoMedio === "daviplata") && !qrOk) {
+    if ((pagoMedio === "nequi" || pagoMedio === "daviplata" || pagoMedio === "breb") && !qrOk) {
       setError("Confirma que ya recibiste el pago por el QR antes de cobrar.");
       return;
     }
@@ -475,7 +588,7 @@ export default function PuntoVenta() {
           propina: tip,
           cupon_codigo: cuponCodigo.trim().toUpperCase() || null,
           detalle: carrito.map((i) => ({ producto_id: i.producto_id, cantidad: i.cantidad, precio: i.precio })),
-          pagos: [{ medio: pagoMedio, monto: total, referencia: tx?.codigo_autorizacion || null }],
+          pagos: [{ medio: pagoMedio, monto: pagoMedio === "efectivo" && tipoVenta === "contado" ? rec : total, referencia: tx?.codigo_autorizacion || null }],
         }),
       });
       if (tx) {
@@ -493,6 +606,10 @@ export default function PuntoVenta() {
         factura: fac || (Array.isArray(docs) ? docs[0] : null),
         cliente: cli ? { telefono: cli.telefono || null, nombre: cli.nombre || null } : null,
       });
+      if (comandaActiva) {
+        api(`/restaurante/comandas/${comandaActiva.id}/cerrar`, { method: "POST" }).catch(() => {});
+        setComandaActiva(null);
+      }
       setCarrito([]);
       setDescuento("");
       setPropina("");
@@ -508,12 +625,14 @@ export default function PuntoVenta() {
       setCliPicker(false);
       setCreandoCli(false);
       beep();
+      vibrar(true);
     } catch (err) {
       if (tarjetaAuth) {
         api(`/pagos/tarjeta/${tarjetaAuth.id}/reversar`, { method: "POST" }).catch(() => {});
         setTarjetaAuth(null);
       }
       beep(false);
+      vibrar(false);
       setError(err.message);
     }
   }
@@ -529,18 +648,6 @@ export default function PuntoVenta() {
     openWindow(`/ventas/${ventaOk.id}/tirilla${q}`).catch((err) => setError(err.message));
   }
 
-  async function enviarWhatsapp() {
-    if (!ventaOk?.id) return;
-    setError("");
-    setWamsg("");
-    try {
-      const r = await api(`/ventas/${ventaOk.id}/whatsapp`, { method: "POST" });
-      setWamsg(`✓ Recibo enviado por WhatsApp${r?.telefono ? ` · +${r.telefono}` : ""}`);
-    } catch (e) {
-      setError(e.message);
-    }
-  }
-
   function nuevaVenta() {
     setVentaOk(null);
     setSuccess("");
@@ -553,15 +660,20 @@ export default function PuntoVenta() {
         <div>
           <h1 style={{ fontSize: 20 }}>Punto de Venta</h1>
           <div className="muted" style={{ marginTop: 2 }}>
-            F2 buscar · F4 código · escanea y vende · ★ marca favoritos
+            F2 buscar · F4 código · F8 cobrar · escanea y vende · ★ marca favoritos
           </div>
         </div>
-        <button className="btn btn-secondary" onClick={abrirPantallaCliente}>
-          🖥️ Pantalla de cliente
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-secondary" onClick={toggleKiosko} title={kiosko ? "Salir de pantalla completa" : "Modo kiosko (pantalla completa, ideal tablet)"}>
+            {kiosko ? "⛶ Salir de kiosko" : "⛶ Kiosko"}
+          </button>
+          <button className="btn btn-secondary" onClick={abrirPantallaCliente}>
+            🖥️ Pantalla de cliente
+          </button>
+        </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 400px", gap: 16, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: kiosko ? "1fr 360px" : "1fr 400px", gap: 16, alignItems: "start" }}>
         {/* ---------- Catálogo ---------- */}
         <div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 10, marginBottom: 10 }}>
@@ -620,7 +732,7 @@ export default function PuntoVenta() {
                   padding: "7px 15px",
                   borderRadius: 999,
                   border: "1px solid var(--line)",
-                  background: filtro === t ? "linear-gradient(135deg,#4f46e5,#2563eb)" : "var(--card)",
+                  background: filtro === t ? "linear-gradient(135deg,#0e9f74,#0b7a59)" : "var(--card)",
                   color: filtro === t ? "#fff" : "var(--ink)",
                   fontWeight: 700,
                   fontSize: 12.5,
@@ -701,14 +813,17 @@ export default function PuntoVenta() {
                     {p.nombre}
                   </div>
                   <div style={{ fontSize: 16, fontWeight: 800, color: "var(--brand1)", marginTop: 6 }}>
-                    {formatMoney(p.precio_venta)}
+                    {formatMoney(Math.round((Number(p.precio_venta) || 0) * (1 + (Number(p.impuesto) || 0) / 100)))}
                     <span style={{ fontSize: 10.5, fontWeight: 600, color: "var(--muted)", marginLeft: 4 }}>
                       {TIPO_LABEL[p.tipo || "unidad"] || "Ud"}
                     </span>
+                    {Number(p.impuesto) > 0 && (
+                      <span style={{ fontSize: 10, color: "#b45309", fontWeight: 700, marginLeft: 6 }}>IVA incl.</span>
+                    )}
                   </div>
                   {Number(p.precio_mayorista) > 0 && Number(p.precio_mayorista) !== Number(p.precio_venta) && (
                     <div style={{ fontSize: 11.5, color: "var(--muted)", marginTop: 2 }}>
-                      May: <b style={{ color: "#059669", fontWeight: 700 }}>{formatMoney(p.precio_mayorista)}</b>
+                      May: <b style={{ color: "#059669", fontWeight: 700 }}>{formatMoney(Math.round((Number(p.precio_mayorista) || 0) * (1 + (Number(p.impuesto) || 0) / 100)))}</b>
                     </div>
                   )}
                   <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
@@ -752,7 +867,7 @@ export default function PuntoVenta() {
                 onClick={() => setTipoVenta("contado")}
                 className="btn btn-sm"
                 style={{
-                  background: tipoVenta === "contado" ? "linear-gradient(135deg,#4f46e5,#2563eb)" : "var(--card)",
+                  background: tipoVenta === "contado" ? "linear-gradient(135deg,#0e9f74,#0b7a59)" : "var(--card)",
                   color: tipoVenta === "contado" ? "#fff" : "var(--ink)",
                   border: "1px solid var(--line)",
                   boxShadow: tipoVenta === "contado" ? "0 6px 14px -8px rgba(13,148,136,.6)" : "none",
@@ -765,7 +880,7 @@ export default function PuntoVenta() {
                 onClick={() => setTipoVenta("credito")}
                 className="btn btn-sm"
                 style={{
-                  background: tipoVenta === "credito" ? "linear-gradient(135deg,#4f46e5,#2563eb)" : "var(--card)",
+                  background: tipoVenta === "credito" ? "linear-gradient(135deg,#0e9f74,#0b7a59)" : "var(--card)",
                   color: tipoVenta === "credito" ? "#fff" : "var(--ink)",
                   border: "1px solid var(--line)",
                   boxShadow: tipoVenta === "credito" ? "0 6px 14px -8px rgba(13,148,136,.6)" : "none",
@@ -774,6 +889,36 @@ export default function PuntoVenta() {
                 Crédito
               </button>
             </div>
+          </div>
+
+          {/* Cargar Comanda de Restaurante */}
+          <div style={{ marginBottom: 10 }}>
+            {comandaActiva ? (
+              <div style={{ background: "rgba(225,29,72,0.12)", border: "1px solid rgba(225,29,72,0.35)", borderRadius: 10, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <span style={{ fontWeight: 800, color: "#e11d48", fontSize: 13 }}>🍽️ {comandaActiva.mesa_nombre}</span>
+                  <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 6 }}>({comandaActiva.numero})</span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ padding: "2px 6px", fontSize: 11, color: "#dc2626" }}
+                  onClick={() => setComandaActiva(null)}
+                  title="Desvincular mesa"
+                >
+                  ✕ Desvincular
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="btn btn-sm"
+                style={{ width: "100%", fontWeight: 700, background: "rgba(225,29,72,0.08)", color: "#e11d48", border: "1px solid rgba(225,29,72,0.25)" }}
+                onClick={abrirSelectorComandas}
+              >
+                🍽️ Cargar Mesa / Comanda de Restaurante
+              </button>
+            )}
           </div>
 
           <div style={{ marginBottom: 12 }}>
@@ -940,6 +1085,9 @@ export default function PuntoVenta() {
                   gap: 8,
                   padding: "9px 2px",
                   borderBottom: "1px solid var(--line)",
+                  borderRadius: 8,
+                  background: i.producto_id === flashId ? "rgba(16,185,129,.16)" : "transparent",
+                  transition: "background .3s ease",
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -995,6 +1143,12 @@ export default function PuntoVenta() {
               <span className="muted">Subtotal</span>
               <span>{formatMoney(subtotal)}</span>
             </div>
+            {impuesto > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <span className="muted">IVA</span>
+                <span>{formatMoney(impuesto)}</span>
+              </div>
+            )}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span className="muted">Descuento</span>
               <div style={{ display: "flex", gap: 6 }}>
@@ -1113,7 +1267,7 @@ export default function PuntoVenta() {
             </div>
           )}
 
-          {(pagoMedio === "nequi" || pagoMedio === "daviplata") && (
+          {(pagoMedio === "nequi" || pagoMedio === "daviplata" || pagoMedio === "breb") && (
             <div
               style={{
                 border: "1px solid var(--line)",
@@ -1125,7 +1279,7 @@ export default function PuntoVenta() {
               }}
             >
               <label style={{ marginBottom: 8, display: "block" }}>
-                {pagoMedio === "nequi" ? "📱 Nequi" : "💸 Daviplata"} · muestra este QR al cliente
+                {pagoMedio === "nequi" ? "📱 Nequi" : pagoMedio === "daviplata" ? "💸 Daviplata" : "🟩 Bre-B"} · muestra este QR al cliente
               </label>
               {qrErr ? (
                 <p style={{ fontSize: 12.5, color: "#d97706", marginBottom: 8 }}>
@@ -1265,9 +1419,13 @@ export default function PuntoVenta() {
                   🖨️ Imprimir tirilla
                 </button>
                 {ventaOk.cliente && (
-                  <button className="btn btn-secondary" onClick={enviarWhatsapp} style={{ width: "100%", padding: 11 }}>
-                    📲 WhatsApp al cliente{ventaOk.cliente.nombre ? ` · ${ventaOk.cliente.nombre.split(" ")[0]}` : ""}
-                  </button>
+                  <WhatsAppButton
+                    telefono={ventaOk.cliente.telefono}
+                    mensaje={`Hola ${ventaOk.cliente.nombre || ""} 👋,\nGracias por tu compra en ${window.location.hostname}.\nTu recibo ${ventaOk.numero || ""} por ${formatMoney(ventaOk.total)} quedó registrado.`}
+                    label={`📲 WhatsApp al cliente${ventaOk.cliente.nombre ? ` · ${ventaOk.cliente.nombre.split(" ")[0]}` : ""}`}
+                    size=""
+                    estilo={{ width: "100%", padding: 11 }}
+                  />
                 )}
                 {wamsg && (
                   <div style={{ fontSize: 12.5, color: "#16a34a", fontWeight: 700 }}>{wamsg}</div>
@@ -1283,7 +1441,7 @@ export default function PuntoVenta() {
               </div>
             </div>
           ) : (
-            <button className="btn" onClick={cobrar} disabled={carrito.length === 0 || (pagoMedio === "efectivo" && tipoVenta === "contado" && rec < total) || ((pagoMedio === "nequi" || pagoMedio === "daviplata") && !qrOk)} style={{ width: "100%", padding: 14, fontSize: 17, borderRadius: 14 }}>
+            <button className="btn" onClick={cobrar} disabled={!puedeCobrar} style={{ width: "100%", padding: 14, fontSize: 17, borderRadius: 14 }}>
               {pagoMedio === "tarjeta" && tarjetaAuth ? "🛒 Cobrar con tarjeta" : "🛒 Cobrar"} · {formatMoney(total)}
             </button>
           )}
@@ -1291,7 +1449,7 @@ export default function PuntoVenta() {
           <div style={{ display: "flex", gap: 8, marginTop: 10, fontSize: 11.5, color: "var(--muted)" }}>
             <span style={{ flex: 1, textAlign: "center" }}>F2 · Buscar</span>
             <span style={{ flex: 1, textAlign: "center" }}>F4 · Código</span>
-            <span style={{ flex: 1, textAlign: "center" }}>Enter · Agregar</span>
+            <span style={{ flex: 1, textAlign: "center" }}>F8 · Cobrar</span>
           </div>
         </div>
       </div>
@@ -1317,7 +1475,7 @@ export default function PuntoVenta() {
           >
             <h3 style={{ fontSize: 15, fontWeight: 800, marginBottom: 2 }}>{pesoModal.nombre}</h3>
             <div className="muted" style={{ marginBottom: 14 }}>
-              {formatMoney(pesoModal.precio_venta)} por kilogramo
+              {formatMoney(Math.round(pesoModal.precio_venta * (1 + (Number(pesoModal.impuesto) || 0) / 100)))} por kilogramo{Number(pesoModal.impuesto) > 0 ? " (IVA incl.)" : ""}
             </div>
 
             <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--muted)", marginBottom: 5 }}>Peso (kg)</div>
@@ -1354,7 +1512,7 @@ export default function PuntoVenta() {
                 }}
               >
                 <span style={{ fontWeight: 600, fontSize: 13 }}>{Number(pesoVal)} kg</span>
-                <span>{formatMoney((Number(pesoVal) || 0) * (Number(pesoModal.precio_venta) || 0))}</span>
+                <span>{formatMoney((Number(pesoVal) || 0) * (Number(pesoModal.precio_venta) || 0) * (1 + (Number(pesoModal.impuesto) || 0) / 100))}</span>
               </div>
             )}
 
@@ -1366,6 +1524,82 @@ export default function PuntoVenta() {
                 Agregar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Selector de Comandas / Mesas ---------- */}
+      {comandasModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.6)", display: "grid", placeItems: "center", zIndex: 1200, padding: 20 }}>
+          <div className="card" style={{ width: "min(680px, 100%)", maxHeight: "85vh", overflow: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, color: "var(--ink)" }}>🍽️ Mesas con Comandas Abiertas</h3>
+                <p className="muted" style={{ margin: "3px 0 0", fontSize: 12.5 }}>
+                  Selecciona una mesa para cargar sus consumos a la caja y cobrar la cuenta.
+                </p>
+              </div>
+              <button className="btn btn-ghost" onClick={() => setComandasModal(false)}>✕</button>
+            </div>
+
+            {comandasLista.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "36px 16px", color: "var(--muted)" }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>🪑</div>
+                <p>No hay comandas abiertas en este momento.</p>
+                <p style={{ fontSize: 12 }}>Los pedidos realizados desde la carta digital o desde Restaurante aparecerán aquí.</p>
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {comandasLista.map((com) => {
+                  const nombreMesa = mesasMapa[com.mesa_id] || `Mesa #${com.mesa_id}`;
+                  const cantItems = (com.detalle || []).reduce((s, l) => s + Number(l.cantidad || 1), 0);
+                  const totalCom = (com.detalle || []).reduce((s, l) => s + Number(l.precio || 0) * Number(l.cantidad || 1), 0);
+
+                  return (
+                    <div
+                      key={com.id}
+                      style={{
+                        border: "1px solid var(--line)",
+                        borderRadius: 12,
+                        padding: "14px 16px",
+                        background: "var(--card)",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 14,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontWeight: 800, fontSize: 16, color: "var(--brand1)" }}>{nombreMesa}</span>
+                          <span className="badge" style={{ fontSize: 11 }}>{com.numero}</span>
+                          {com.cliente && <span className="badge badge-info" style={{ fontSize: 10 }}>👤 {com.cliente}</span>}
+                        </div>
+                        <div style={{ fontSize: 12.5, color: "var(--muted)", lineHeight: 1.4 }}>
+                          {(com.detalle || []).slice(0, 4).map((d) => `${d.cantidad}x ${d.producto || d.producto_id}`).join(", ")}
+                          {(com.detalle || []).length > 4 && ` y ${(com.detalle || []).length - 4} más…`}
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 12, color: "var(--muted)" }}>{cantItems} ítems</div>
+                        <div style={{ fontSize: 17, fontWeight: 800, color: "var(--ink)", marginBottom: 6 }}>
+                          {formatMoney(com.total || totalCom)}
+                        </div>
+                        <button
+                          className="btn btn-sm btn-primary"
+                          style={{ fontWeight: 700 }}
+                          onClick={() => cargarComandaEnPOS(com)}
+                        >
+                          Cargar al Carrito ➔
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -1,0 +1,112 @@
+# =============================================================
+# POS COMPLETO EN 1 COMANDO (despliegue para el cliente final)
+# -------------------------------------------------------------
+# Levanta la BD, el backend y el frontend desde imágenes públicas
+# (GHCR o Docker Hub) + HTTPS automático con Caddy. NO necesita
+# el código fuente: cualquiera puede instalarlo con 3 comandos.
+#
+#   cp .env.all.example .env.all
+#   # editar .env.all (dominios + claves)
+#   docker compose -f compose.all.yml --env-file .env.all up -d
+#
+# El archivo .env.all queda fuera del alcance de git (secretos).
+# =============================================================
+
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ${CONTAINER_PREFIX:-pos}_db
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${SA_PASSWORD:?Defina SA_PASSWORD en .env.all}
+      MSSQL_PID: ${SA_EDITION:-Developer}
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+    volumes:
+      - db_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -Q 'SELECT 1' -b -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    networks:
+      - internal
+
+  backend:
+    image: ${REGISTRY:-docker.io}/${REGISTRY_ORG:-deimer18}/pos-backend:${TAG:-latest}
+    container_name: ${CONTAINER_PREFIX:-pos}_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: mssql+pyodbc://sa:${SA_PASSWORD}@db:1433/${DB_NAME:-posdb}?driver=ODBC+Driver+18+for+SQL+Server&TrustServerCertificate=yes
+      SECRET_KEY: ${SECRET_KEY:?Defina SECRET_KEY en .env.all}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-480}
+      DEBUG: ${DEBUG:-false}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://${DOMAIN_APP}}
+      DB_HOST: db
+      DB_PORT: 1433
+      DB_USER: sa
+      DB_PASSWORD: ${SA_PASSWORD}
+      DB_NAME: ${DB_NAME:-posdb}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-admin123}
+      SEED_CAJERO_PASSWORD: ${SEED_CAJERO_PASSWORD:-cajero123}
+      SEED_ADMIN_FORCE_CHANGE: ${SEED_ADMIN_FORCE_CHANGE:-1}
+      DIAN_ENVIRONMENT: ${DIAN_ENVIRONMENT:-disabled}
+      DIAN_SOFTWARE_ID: ${DIAN_SOFTWARE_ID:-}
+      DIAN_SOFTWARE_PIN: ${DIAN_SOFTWARE_PIN:-}
+      DIAN_TEST_SET_ID: ${DIAN_TEST_SET_ID:-}
+      DIAN_CERTIFICATE_PATH: ${DIAN_CERTIFICATE_PATH:-}
+      DIAN_CERTIFICATE_PASSWORD: ${DIAN_CERTIFICATE_PASSWORD:-}
+      DIAN_CLAVE_TECNICA: ${DIAN_CLAVE_TECNICA:-}
+      DIAN_PROVIDER_URL: ${DIAN_PROVIDER_URL:-}
+      DIAN_CONECTOR: ${DIAN_CONECTOR:-mock}
+      DIAN_MOCK_TRANSMISSION: ${DIAN_MOCK_TRANSMISSION:-true}
+    volumes:
+      - app_data:/app/datos
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - app
+      - internal
+
+  frontend:
+    image: ${REGISTRY:-docker.io}/${REGISTRY_ORG:-deimer18}/pos-frontend:${TAG:-latest}
+    container_name: ${CONTAINER_PREFIX:-pos}_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      - app
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: ${CONTAINER_PREFIX:-pos}_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN_APP: ${DOMAIN_APP:?Defina DOMAIN_APP en .env.all}
+      DOMAIN_API: ${DOMAIN_API:?Defina DOMAIN_API en .env.all}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - app
+
+networks:
+  app:
+  internal:
+    internal: true
+
+volumes:
+  db_data:
+  app_data:
+  caddy_data:
+  caddy_config:

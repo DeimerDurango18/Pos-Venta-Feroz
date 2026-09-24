@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from app.database import SessionLocal
 from app.main import app
-from app.models import AperturaCaja, Stock, Venta, VentaDetalle, VentaPago
+from app.models import AperturaCaja, MovimientoCaja, Stock, Venta, VentaDetalle, VentaPago
 
 C = TestClient(app)
 
@@ -66,15 +66,6 @@ def stock_de(producto_id):
         return float(s.existencias) if s else None
 
 
-anterior = None
-
-
-def ventas_caja_delta():
-    with SessionLocal() as db:
-        suma = sum(float(v.total) for v in db.query(Venta).filter_by(caja_id=1, estado="completada").all())
-        return suma - (anterior or 0)
-
-
 def venta(detalle, pagos, **kw):
     body = {"empresa_id": 1, "sucursal_id": 1, "tipo": "contado",
             "detalle": detalle, "pagos": pagos, **kw}
@@ -84,7 +75,6 @@ def venta(detalle, pagos, **kw):
 # ================= 1. APERTURA / CIERRE DE CAJA (133, 218-228) =================
 print("\n== 1. Caja: apertura, movimientos, gastos, arqueo y cierre ==")
 with SessionLocal() as db:
-    anterior = sum(float(v.total) for v in db.query(Venta).filter_by(caja_id=1, estado="completada").all())
     abierta = db.query(AperturaCaja).filter_by(caja_id=1, estado="abierta").first()
 if abierta:
     C.post(f"/caja/{abierta.id}/cierre", headers=H)
@@ -99,7 +89,7 @@ check("Movimiento ingreso 201", mv.status_code == 201, mv.text)
 mv2 = C.post("/caja/movimientos", headers=H, json={"apertura_caja_id": ap_id, "tipo": "egreso", "concepto": "Retiro para vueltos", "monto": 5000})
 check("Movimiento egreso 201", mv2.status_code == 201, mv2.text)
 mv3 = C.post("/caja/movimientos", headers=Hc, json={"apertura_caja_id": ap_id, "tipo": "ingreso", "concepto": "cajero puede registrar movimiento", "monto": 1})
-check("Movimiento con cajero permitido por rol (201)", mv3.status_code == 201, mv3.text)
+check("Movimiento como cajero 201 (permiso del rol)", mv3.status_code == 201, mv3.text)
 g1 = C.post("/caja/gastos", headers=H, json={"empresa_id": 1, "sucursal_id": 1, "categoria": "servicios", "concepto": "Luz", "monto": 12000, "medio": "efectivo"})
 check("Gasto de caja 201", g1.status_code == 201, g1.text)
 check("Lista de gastos", C.get("/caja/gastos", headers=H).status_code == 200)
@@ -315,9 +305,24 @@ r = C.post(f"/caja/{ap_id}/cierre", headers=H)
 check("Cierre de caja 200", r.status_code == 200, r.text)
 if r.status_code == 200:
     ci = r.json()
-    total_caja1 = ventas_caja_delta() + (anterior or 0)
-    esperado_cierre = 100000 + total_caja1 + (10000 + 1) - 5000
-    check("Saldo cierre = inicial + ventas + movs", abs(ci["saldo_cierre"] - esperado_cierre) < 0.01,
+    with SessionLocal() as db:
+        apertura = db.get(AperturaCaja, ap_id)
+        inicio = apertura.created_at
+        ventas_turno = (
+            db.query(Venta)
+            .filter(
+                Venta.caja_id == apertura.caja_id,
+                Venta.estado == "completada",
+                Venta.created_at >= inicio,
+            )
+            .all()
+        )
+        tot_turno = sum(float(v.total) for v in ventas_turno)
+        movs = db.query(MovimientoCaja).filter(MovimientoCaja.apertura_caja_id == apertura.id).all()
+        neto = sum(float(m.monto) for m in movs if m.tipo in ("ingreso",))
+        neto -= sum(float(m.monto) for m in movs if m.tipo in ("egreso", "gasto", "retiro"))
+    esperado_cierre = round(100000 + tot_turno + neto, 2)
+    check("Saldo cierre = inicial + ventas del turno + movs", abs(ci["saldo_cierre"] - esperado_cierre) < 0.01,
           f"{ci['saldo_cierre']} vs {esperado_cierre}")
 r = C.post("/caja/apertura", headers=H, json={"caja_id": 1, "saldo_inicial": 100000})
 check("Re-apertura tras cierre 201", r.status_code == 201, r.text)

@@ -9,7 +9,7 @@ services:
       MSSQL_PID: ${SA_EDITION:-Developer}
       MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
     ports:
-      - "${DB_PORT_HOST:-26433}:1433"
+      - "127.0.0.1:${DB_PORT_HOST:-26433}:1433"
     volumes:
       - mssql_data:/var/opt/mssql
     healthcheck:
@@ -43,6 +43,7 @@ services:
       DIAN_CERTIFICATE_PASSWORD: ${DIAN_CERTIFICATE_PASSWORD:-}
       DIAN_CLAVE_TECNICA: ${DIAN_CLAVE_TECNICA:-}
       DIAN_PROVIDER_URL: ${DIAN_PROVIDER_URL:-}
+      DIAN_CONECTOR: ${DIAN_CONECTOR:-mock}
       DIAN_MOCK_TRANSMISSION: ${DIAN_MOCK_TRANSMISSION:-true}
     depends_on:
       db:

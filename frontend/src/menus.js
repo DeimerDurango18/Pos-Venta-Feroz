@@ -2,6 +2,8 @@ export const ITEMS = {
   dashboard: { to: "/", label: "Dashboard", icon: "🏠", end: true, modulo: "dashboard" },
   pos: { to: "/pos", label: "Punto de Venta", icon: "🛒", modulo: "pos" },
   ventas: { to: "/ventas", label: "Ventas", icon: "💳", modulo: "ventas" },
+  cotizaciones: { to: "/cotizaciones", label: "Cotizaciones", icon: "🗳️", modulo: "ventas" },
+  linksPago: { to: "/links", label: "Links de pago", icon: "🔗", modulo: "ventas" },
   caja: { to: "/caja", label: "Caja", icon: "💰", modulo: "caja" },
   restaurante: { to: "/restaurante", label: "Mesas", icon: "🍽️", modulo: "restaurante" },
   cocina: { to: "/cocina", label: "Pantalla Cocina", icon: "👨‍🍳", modulo: "restaurante" },
@@ -32,7 +34,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "restaurante", "cocina", "domicilios"] },
       { titulo: "Punto de venta", items: ["pos", "menuCarta", "productos", "promociones"] },
-      { titulo: "Comercial", items: ["ventas", "clientes", "fidelizacion", "vendedores"] },
+      { titulo: "Comercial", items: ["ventas", "cotizaciones", "linksPago", "clientes", "fidelizacion", "vendedores"] },
       { titulo: "Soporte", items: ["caja", "inventario", "reportes", "facturacion", "seguridad", "integraciones", "configuracion", "sistema"] },
     ],
   },
@@ -41,7 +43,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "restaurante", "cocina", "domicilios"] },
       { titulo: "Barra", items: ["pos", "menuCarta", "productos", "promociones"] },
-      { titulo: "Comercial", items: ["ventas", "clientes", "fidelizacion", "vendedores"] },
+      { titulo: "Comercial", items: ["ventas", "cotizaciones", "linksPago", "clientes", "fidelizacion", "vendedores"] },
       { titulo: "Soporte", items: ["caja", "inventario", "reportes", "facturacion", "seguridad", "integraciones", "configuracion", "sistema"] },
     ],
   },
@@ -50,7 +52,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "pos", "ventas", "caja"] },
       { titulo: "Almacén", items: ["productos", "inventario", "compras", "proveedores"] },
-      { titulo: "Comercial", items: ["clientes", "cartera", "vendedores", "promociones"] },
+      { titulo: "Comercial", items: ["clientes", "cartera", "cotizaciones", "linksPago", "vendedores", "promociones"] },
       { titulo: "Soporte", items: ["facturacion", "reportes", "seguridad", "integraciones", "configuracion", "sistema"] },
     ],
   },
@@ -59,7 +61,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "pos", "ventas", "caja"] },
       { titulo: "Almacén", items: ["productos", "inventario", "compras", "proveedores"] },
-      { titulo: "Comercial", items: ["clientes", "cartera", "apartados", "vendedores", "promociones"] },
+      { titulo: "Comercial", items: ["clientes", "cartera", "apartados", "cotizaciones", "linksPago", "vendedores", "promociones"] },
       { titulo: "Soporte", items: ["facturacion", "reportes", "seguridad", "integraciones", "configuracion", "sistema"] },
     ],
   },
@@ -68,7 +70,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "pos", "caja"] },
       { titulo: "Tienda", items: ["productos", "inventario", "promociones", "compras"] },
-      { titulo: "Comercial", items: ["clientes", "ventas", "cartera", "fidelizacion", "vendedores"] },
+      { titulo: "Comercial", items: ["clientes", "ventas", "linksPago", "cotizaciones", "cartera", "fidelizacion", "vendedores"] },
       { titulo: "Soporte", items: ["facturacion", "reportes", "seguridad", "integraciones", "configuracion", "sistema"] },
     ],
   },
@@ -77,7 +79,7 @@ const MENUS = {
     secciones: [
       { titulo: "Operación", items: ["dashboard", "pos", "ventas", "caja", "restaurante", "cocina", "menuCarta", "domicilios"] },
       { titulo: "Catálogo", items: ["productos", "inventario", "compras", "proveedores", "promociones"] },
-      { titulo: "Comercial", items: ["clientes", "cartera", "vendedores", "fidelizacion", "apartados"] },
+      { titulo: "Comercial", items: ["clientes", "linksPago", "cotizaciones", "cartera", "vendedores", "fidelizacion", "apartados"] },
       { titulo: "Empresa", items: ["facturacion", "reportes", "seguridad", "integraciones", "offline", "configuracion", "sistema"] },
     ],
   },

@@ -102,6 +102,11 @@ check("Exportar PDF", r.status_code == 200 and r.content[:4] == b"%PDF", r.text[
 r = C.get("/reportes/exportar/ventas?formato=xls", headers=H)
 check("Exportar ventas XLS", r.status_code == 200, r.text[:60])
 
+# ---------- Exportación avanzada ----------
+for ruta in ["ventas-detallado", "cartera", "gastos", "compras", "cierres"]:
+    r = C.get(f"/reportes/exportar/{ruta}?formato=xls&desde=2020-01-01&hasta=2100-01-01", headers=H)
+    check(f"Exportar {ruta} XLS", r.status_code == 200 and r.content[:5] == b"<?xml", r.text[:60])
+
 # ---------- 419-422 Produccion ----------
 mp1 = C.post("/productos", headers=H, json={"empresa_id": 1, "nombre": "MP_Test1", "precio_venta": 500, "precio_compra": 150, "costo": 150}).json()["id"]
 mp2 = C.post("/productos", headers=H, json={"empresa_id": 1, "nombre": "MP_Test2", "precio_venta": 700, "precio_compra": 250, "costo": 250}).json()["id"]

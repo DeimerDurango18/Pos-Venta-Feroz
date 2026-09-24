@@ -10,7 +10,7 @@ export async function api(path, options = {}) {
 
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
-  if (res.status === 401 && !path.startsWith("/auth/login")) {
+  if (res.status === 401 && !path.startsWith("/auth/login") && !path.startsWith("/publico") && !options.public) {
     localStorage.removeItem("token");
     localStorage.removeItem("user");
     localStorage.removeItem("debe_cambiar_password");

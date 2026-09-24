@@ -18,7 +18,10 @@ Sistema de punto de venta con catálogo de productos, inventario, ventas/POS, ca
 
 ```
 .
-├── docker-compose.yml        # SQL Server 2022 en Docker (puerto host 26433) + túnel Cloudflare
+├── compose.all.yml            # DESPLIEGUE TODO-EN-UNO (1 comando, imágenes públicas)
+├── compose.prod.yml           # Producción en VPS con Caddy (CI/CD)
+├── docker-compose.yml         # Desarrollo: SQL Server 2022 en Docker (puerto host 26433)
+├── .env.all.example           # Plantilla del despliegue en 1 comando
 ├── backend/
 │   ├── app/
 │   │   ├── main.py           # Aplicación FastAPI y registro de routers
@@ -36,6 +39,30 @@ Sistema de punto de venta con catálogo de productos, inventario, ventas/POS, ca
 ```
 
 ## Puesta en marcha
+
+### 0. Despliegue público en 1 comando (recomendado)
+
+El proyecto se distribuye como **imágenes públicas** listas para instalar:
+
+- **Docker Hub** (ya publicadas): [deimer18/pos-backend](https://hub.docker.com/r/deimer18/pos-backend) y [deimer18/pos-frontend](https://hub.docker.com/r/deimer18/pos-frontend)
+- **GHCR** (`ghcr.io/<owner>/pos-backend`, `pos-frontend`): se publica automáticamente en el push a `main` del repo.
+
+Cualquier servidor con Docker puede instalar el POS completo —BD, backend, frontend y HTTPS automático con Caddy— desde las imágenes, **sin el código fuente**:
+
+```bash
+# 1) Copiar y editar la plantilla (dominios + contraseñas)
+cp .env.all.example .env.all
+
+# 2) Los dominios deben apuntar (DNS) al servidor, p. ej. pos.cliente.co y api.pos.cliente.co
+
+# 3) Levantar todo: base de datos + API + frontend + HTTPS
+docker compose -f compose.all.yml --env-file .env.all up -d
+```
+
+- App: `https://pos.cliente.co` · API: `https://api.pos.cliente.co/docs`
+- Let's Encrypt renueva los certificados solo; la base de datos **no se publica** a internet.
+- Para cambiar el origen: `REGISTRY=ghcr.io` / `REGISTRY_ORG=<owner>` (o `REGISTRY=docker.io` / `REGISTRY_ORG=deimer18`, el valor por defecto) en `.env.all`.
+- Prefijo de contenedores (`CONTAINER_PREFIX`) permite correr varios POS aislados en el mismo host.
 
 ### 1. Levantar la base de datos
 

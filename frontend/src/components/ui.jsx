@@ -12,7 +12,7 @@ import {
   YAxis,
 } from "recharts";
 
-export const PALETA = ["#4f46e5", "#6366f1", "#38bdf8", "#f59e0b", "#10b981", "#a855f7", "#fb7185", "#94a3b8", "#22d3ee"];
+export const PALETA = ["#0e9f74", "#3eb489", "#38bdf8", "#f59e0b", "#10b981", "#a855f7", "#fb7185", "#94a3b8", "#22d3ee"];
 
 function useIsDark() {
   const [dark, setDark] = useState(document.documentElement.getAttribute("data-theme") === "dark");
@@ -34,7 +34,55 @@ export function formatMoney(n) {
   }).format(n || 0);
 }
 
-export function KpiCard({ label, value, icon = "📊", accent = "#4f46e5", sub, trend }) {
+export function waLink(telefono, mensaje) {
+  let tel = String(telefono || "").replace(/\D/g, "");
+  if (!tel) return "";
+  if (tel.length === 10 && tel.startsWith("3")) tel = `57${tel}`;
+  return `https://wa.me/${tel}?text=${encodeURIComponent(mensaje || "")}`;
+}
+
+export function abrirWhatsApp(telefono, mensaje) {
+  const link = waLink(telefono, mensaje);
+  if (link) window.open(link, "_blank", "noopener");
+  return !!link;
+}
+
+export function WhatsAppButton({ telefono, mensaje, label = "💬 WhatsApp", size = "sm", estilo }) {
+  const [num, setNum] = useState("");
+  const [edit, setEdit] = useState(false);
+  const abrir = (t) => {
+    if (abrirWhatsApp(t, mensaje)) setEdit(false);
+  };
+  if (edit) {
+    return (
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "center", width: "100%" }}>
+        <input
+          className="input"
+          placeholder="3xxxxxxxxx"
+          value={num}
+          onChange={(e) => setNum(e.target.value.replace(/\D/g, ""))}
+          maxLength={13}
+          style={{ width: 140, flexShrink: 1 }}
+          autoFocus
+        />
+        <button className={`btn btn-primary btn-${size}`} disabled={!num} onClick={() => abrir(num)}>Abrir chat</button>
+        <button className={`btn btn-${size}`} onClick={() => setEdit(false)}>✕</button>
+      </span>
+    );
+  }
+  return (
+    <button
+      className={`btn btn-${size}`}
+      onClick={() => (telefono ? abrir(telefono) : setEdit(true))}
+      style={estilo}
+      title={telefono ? "Abrir WhatsApp con el mensaje listo para enviar" : "Escriba el número del cliente para abrir WhatsApp directo"}
+    >
+      {label}
+    </button>
+  );
+}
+
+export function KpiCard({ label, value, icon = "📊", accent = "#0e9f74", sub, trend }) {
   return (
     <div className="kpi" style={{ "--accent": accent, "--accent-soft": accent + "1a" }}>
       <div className="kpi-icon">{icon}</div>
@@ -112,7 +160,7 @@ export function Donut({ data = [], nameKey = "name", valueKey = "value", colors 
   );
 }
 
-export function TrendChart({ data = [], dataKey = "total", xKey = "dia", money = true, accent = "#4f46e5", suffix = "" }) {
+export function TrendChart({ data = [], dataKey = "total", xKey = "dia", money = true, accent = "#0e9f74", suffix = "" }) {
   const gid = useId();
   const isDark = useIsDark();
   const gridColor = isDark ? "#263041" : "#eef2f7";
@@ -152,7 +200,7 @@ export function TrendChart({ data = [], dataKey = "total", xKey = "dia", money =
   );
 }
 
-export function ProgressList({ items = [], labelKey = "name", valueKey = "value", money = false, accent = "#4f46e5", max }) {
+export function ProgressList({ items = [], labelKey = "name", valueKey = "value", money = false, accent = "#0e9f74", max }) {
   const top = max ?? Math.max(...items.map((i) => Number(i[valueKey]) || 0), 1);
   return (
     <div className="prog-list">

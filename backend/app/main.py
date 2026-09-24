@@ -1,7 +1,9 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+import time
 
+from . import telemetria
 from .config import settings
 from .database import get_session
 from .models import Empresa, ErrorLog, Usuario
@@ -17,14 +19,17 @@ from .routers import (
     cartera,
     compras,
     configuracion,
+    cotizaciones,
     devoluciones,
     domicilios,
+    estado,
     etiquetas,
     facturacion,
     fidelizacion,
     importar,
     integraciones,
     inventario,
+    links_pago,
     offline,
     organizacion,
     pagos,
@@ -36,9 +41,11 @@ from .routers import (
     promociones,
     publico,
     recetas,
+    recurrentes,
     reportes,
     restaurante,
     seguridad,
+    setup,
     sistema,
     usuarios,
     vendedores,
@@ -64,8 +71,13 @@ app.add_middleware(
 async def exigir_cambio_de_password(request: Request, call_next):
     """Bloquea el acceso a la app mientras el usuario tenga password pendiente de cambio
     o el negocio no tenga habilitado el módulo de la ruta solicitada."""
-    publicos = ("/", "/docs", "/redoc", "/openapi.json", "/favicon.ico")
-    if request.url.path.startswith("/auth/") or request.url.path in publicos:
+    publicos = ("/", "/docs", "/redoc", "/openapi.json", "/favicon.ico", "/estado")
+    if (
+        request.url.path.startswith("/auth/")
+        or request.url.path.startswith("/setup")
+        or request.url.path == "/estado"
+        or request.url.path in publicos
+    ):
         return await call_next(request)
     header = request.headers.get("authorization", "")
     if header.lower().startswith("bearer "):
@@ -105,6 +117,20 @@ async def exigir_cambio_de_password(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def telemetria_middleware(request: Request, call_next):
+    """Telemetría del piloto: registra latencia, estado y rutas lentas por request."""
+    inicio = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        telemetria.registrar(request.method, telemetria._clave_ruta(request), 500, (time.perf_counter() - inicio) * 1000)
+        raise
+    ms = (time.perf_counter() - inicio) * 1000
+    telemetria.registrar(request.method, telemetria._clave_ruta(request), response.status_code, ms)
+    return response
+
+
 @app.get("/")
 def root():
     return {"message": "POS API funcionando", "docs": "/docs"}
@@ -120,6 +146,7 @@ app.include_router(productos.router)
 app.include_router(inventario.router)
 app.include_router(personas.router)
 app.include_router(ventas.router)
+app.include_router(cotizaciones.router)
 app.include_router(caja.router)
 app.include_router(compras.router)
 app.include_router(cartera.router)
@@ -139,10 +166,15 @@ app.include_router(reportes.router)
 app.include_router(produccion.router)
 app.include_router(recetas.router)
 app.include_router(acuerdos.router)
+app.include_router(recurrentes.router)
 app.include_router(etiquetas.router)
 app.include_router(integraciones.router)
+app.include_router(links_pago.router)
+app.include_router(links_pago.pub)
 app.include_router(sistema.router)
+app.include_router(setup.router)
 app.include_router(publico.router)
+app.include_router(estado.router)
 
 
 @app.on_event("startup")
@@ -150,6 +182,10 @@ def _arrancar_servicios():
     from .wa import iniciar_scheduler
 
     iniciar_scheduler()
+
+    from .backup import iniciar_scheduler as iniciar_backups
+
+    iniciar_backups()
 
 
 @app.exception_handler(Exception)

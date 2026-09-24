@@ -6,12 +6,19 @@ __pycache__/
 
 # Entorno local (secretos por cliente)
 .env
+.env.*
+!.env.example
+!.env.prod.example
+!.env.all.example
 
 # Node
 node_modules/
 
 # Build del frontend (se genera en el build de Docker)
 frontend/dist/
+
+# Caché local de Wrangler (Cloudflare Pages)
+.wrangler/
 
 # Logs
 *.log

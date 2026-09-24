@@ -70,6 +70,30 @@ def simular_error(
     return reg
 
 
+@router.get("/telemetria")
+def telemetria_(
+    usuario: Usuario = Depends(get_current_user),
+):
+    """Métricas del piloto: latencias, estados y rutas lentas (solo admin)."""
+    if not usuario.es_admin:
+        raise HTTPException(403, "Solo el administrador consulta la telemetría")
+    from .. import telemetria
+
+    return telemetria.resumen()
+
+
+@router.post("/telemetria/reiniciar")
+def telemetria_reiniciar(
+    usuario: Usuario = Depends(get_current_user),
+):
+    if not usuario.es_admin:
+        raise HTTPException(403, "Solo el administrador consulta la telemetría")
+    from .. import telemetria
+
+    telemetria.reiniciar()
+    return {"ok": True}
+
+
 @router.patch("/errores/{error_id}/resolver", response_model=ErrorLogOut)
 def resolver_error(
     error_id: int,

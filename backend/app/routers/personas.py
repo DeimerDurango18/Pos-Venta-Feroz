@@ -3,6 +3,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from ..database import get_db
+from ..dian import NIT_CONSUMIDOR_FINAL
 from ..models import Cliente, Empresa, Proveedor
 from ..schemas.personas import (
     ClienteCreate,
@@ -39,7 +40,12 @@ def listar_clientes(
 def crear_cliente(data: ClienteCreate, empresa_id: int, db: Session = Depends(get_db)):
     if not db.get(Empresa, empresa_id):
         raise HTTPException(400, "Empresa no existe")
-    cliente = Cliente(empresa_id=empresa_id, **data.model_dump())
+    payload = data.model_dump()
+    if not (payload.get("documento") or "").strip():
+        payload["documento"] = NIT_CONSUMIDOR_FINAL
+    if not (payload.get("tipo_documento") or "").strip():
+        payload["tipo_documento"] = "CC"
+    cliente = Cliente(empresa_id=empresa_id, **payload)
     db.add(cliente)
     db.commit()
     db.refresh(cliente)

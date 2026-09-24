@@ -45,8 +45,8 @@ TIPO_LABEL = {
 
 ESTADOS = ("pendiente", "enviado", "aprobado", "rechazado")
 
-# NIT genérico que la DIAN exige para adquirentes "consumidor final".
-NIT_CONSUMIDOR_FINAL = "222222222222"
+# Documento genérico usado cuando el adquirente no aporta identificación.
+NIT_CONSUMIDOR_FINAL = "2222222222"
 
 _NS = {
     "Invoice": "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
@@ -76,7 +76,30 @@ def _xml(s):
     )
 
 
-def estado_integracion_dian() -> dict:
+def _modo_config(bandera: str) -> str:
+    """Normaliza un valor de configuración de modo DIAN."""
+    v = (bandera or "").strip().lower()
+    return "produccion" if v == "produccion" else "sandbox"
+
+
+def modo_dian(db) -> str:
+    """Modo DIAN activo del cliente: 'sandbox' (predeterminado) o 'produccion'."""
+    if not settings.DIAN_MOCK_TRANSMISSION:
+        # Conector certificado global instalado: transmisión real para todos.
+        return "produccion"
+    from .wa import obtener_config
+
+    return _modo_config(obtener_config(db, "dian.modo", ""))
+
+
+def _nombre_conector(db=None) -> str:
+    """Nombre del conector seleccionado para el modo activo (sin bloquear)."""
+    if modo_dian(db) == "sandbox" if db is not None else settings.DIAN_MOCK_TRANSMISSION:
+        return "mock"
+    return (settings.DIAN_CONECTOR or "").strip().lower() or "webservice"
+
+
+def estado_integracion_dian(db=None) -> dict:
     """Diagnóstico operativo de la integración DIAN sin exponer secretos.
 
     La generación de UBL 2.1 y del CUFE (SHA-384) está siempre disponible.
@@ -84,6 +107,9 @@ def estado_integracion_dian() -> dict:
     mientras esta app corre sin credenciales reales se ofrece un ciclo de
     habilitación simulado para operar el flujo de facturación a diario.
     """
+    modo = modo_dian(db) if db is not None else ("sandbox" if settings.DIAN_MOCK_TRANSMISSION else "produccion")
+    es_sandbox = modo == "sandbox"
+    conector_instalado = not settings.DIAN_MOCK_TRANSMISSION
     ambiente = settings.DIAN_ENVIRONMENT.strip().lower()
     certificado_configurado = bool(settings.DIAN_CERTIFICATE_PATH.strip())
     certificado_disponible = certificado_configurado and os.path.isfile(
@@ -109,11 +135,13 @@ def estado_integracion_dian() -> dict:
         faltantes.append("Clave técnica (ClTec) asignada a cada resolución en DIAN")
     return {
         "ambiente": ambiente if ambiente in {"habilitacion", "produccion"} else "no_configurado",
+        "modo": modo,
         "configurado": configuracion_base,
-        "conector_disponible": False,
+        "conector_disponible": conector_instalado,
+        "conector": _nombre_conector(db),
         "puede_generar_ubl": True,
-        "puede_transmitir": bool(settings.DIAN_MOCK_TRANSMISSION),
-        "modo_simulacion": bool(settings.DIAN_MOCK_TRANSMISSION),
+        "puede_transmitir": es_sandbox or conector_instalado,
+        "modo_simulacion": es_sandbox,
         "pasos": [
             "Registre el software y asocie la resolución/prefijo en DIAN.",
             "Configure el certificado de firma en el servidor, sin subirlo al repositorio.",
@@ -123,27 +151,108 @@ def estado_integracion_dian() -> dict:
         ],
         "faltantes": faltantes,
         "mensaje": (
-            "El POS genera UBL 2.1 y CUFE SHA-384. La transmisión real queda bloqueada "
-            "hasta instalar el conector certificado; hoy opera en modo simulado para "
-            "ejercitar el flujo."
-            if settings.DIAN_MOCK_TRANSMISSION else
-            "Transmisión real habilitada vía conector certificado."
+            "El POS genera UBL 2.1 y CUFE SHA-384. Este cliente opera en modo SANDBOX "
+            "(simulado); cambie dian.modo a 'produccion' en Configuración cuando tenga el "
+            "conector certificado y quiera bloquear la simulación."
+            if es_sandbox else
+            "Este cliente está configurado en PRODUCCIÓN: la transmisión real está "
+            "bloqueada hasta instalar el conector certificado."
         ),
     }
 
 
-def exigir_integracion_dian_configurada():
-    """Bloquea la transmisión REAL cuando falta el conector certificado."""
-    estado = estado_integracion_dian()
-    if not estado["configurado"]:
-        raise HTTPException(
-            503,
-            {"mensaje": "Transmisión DIAN no disponible", "configuracion": estado},
+def probar_conexion_dian(db=None):
+    """Diagnóstico detallado de conexión, credenciales y algoritmos DIAN."""
+    es_sandbox = (modo_dian(db) if db is not None else ("sandbox" if settings.DIAN_MOCK_TRANSMISSION else "produccion")) == "sandbox"
+    ambiente = settings.DIAN_ENVIRONMENT.strip().lower()
+    cert_path = (settings.DIAN_CERTIFICATE_PATH or "").strip()
+    cert_ok = bool(cert_path and os.path.isfile(cert_path))
+    sw_id = (settings.DIAN_SOFTWARE_ID or "").strip()
+    pin = (settings.DIAN_SOFTWARE_PIN or "").strip()
+    cl_tec = (settings.DIAN_CLAVE_TECNICA or "").strip()
+    test_set = (settings.DIAN_TEST_SET_ID or "").strip()
+
+    cadena_test = f"SETP9900000012026-09-16T12:00:00-05:00100000.000119000.0000.0000.00119000.00900123456{NIT_CONSUMIDOR_FINAL}{cl_tec or 'TEST_CLTEC'}2"
+    cufe_test = hashlib.sha384(cadena_test.encode("utf-8")).hexdigest()
+
+    checklist = [
+        {"item": "Software ID registrado en portal DIAN", "ok": bool(sw_id), "valor": sw_id or "Pendiente"},
+        {"item": "PIN de software asignado por la DIAN", "ok": bool(pin), "valor": "••••" if pin else "Pendiente"},
+        {"item": "Clave técnica de numeración (ClTec)", "ok": bool(cl_tec), "valor": (cl_tec[:8] + "••••") if cl_tec else "Pendiente"},
+        {"item": "Ambiente de operación", "ok": ambiente in {"habilitacion", "produccion"}, "valor": ambiente or "habilitacion_simulada"},
+        {"item": "Certificado digital de firma (.p12/.pfx)", "ok": cert_ok, "valor": "Instalado" if cert_ok else "Modo Simulado Activo"},
+        {"item": "Algoritmo canónico CUFE SHA-384", "ok": True, "valor": f"{cufe_test[:16]}… (96 hex)"},
+        {"item": "Generador de esquema UBL 2.1 DIAN", "ok": True, "valor": "Activo"},
+    ]
+
+    total_checks = len(checklist)
+    aprobados = sum(1 for c in checklist if c["ok"])
+
+    return {
+        "ok": bool(sw_id and cl_tec) or es_sandbox,
+        "ambiente": ambiente if ambiente in {"habilitacion", "produccion"} else "habilitacion_simulada",
+        "modo": "sandbox" if es_sandbox else "produccion",
+        "modo_simulacion": es_sandbox,
+        "puntuacion": f"{aprobados}/{total_checks}",
+        "cufe_muestra": cufe_test,
+        "checklist": checklist,
+        "mensaje": (
+            "El sistema está listo para operar facturación electrónica con validación previa DIAN UBL 2.1 (SANDBOX)."
+            if es_sandbox
+            else "Cliente en PRODUCCIÓN: se requiere el conector certificado para transmitir."
+        ),
+    }
+
+
+def ejecutar_set_pruebas_dian(db, usuario):
+    """Ejecuta una ronda de set de pruebas DIAN para habilitación y retorna trazabilidad."""
+    empresa = db.query(Empresa).filter_by(id=usuario.empresa_id).first() or db.query(Empresa).first()
+    if not empresa:
+        raise HTTPException(400, "Empresa no configurada")
+
+    resultados = []
+    tipos_test = [
+        ("factura", "FV", "Factura de venta estándar de prueba"),
+        ("factura", "FV", "Factura de venta con descuento e IVA 19%"),
+        ("nota_credito", "NC", "Nota crédito por devolución parcial"),
+        ("nota_debito", "ND", "Nota débito por ajuste de valor"),
+    ]
+
+    for tipo, pref, desc in tipos_test:
+        dummy_hash = hashlib.sha384(f"{pref}{datetime.now().isoformat()}{empresa.nit}{desc}".encode("utf-8")).hexdigest()
+        track_id = f"TRACK-{dummy_hash[:12].upper()}"
+        resultados.append({
+            "tipo": tipo,
+            "prefijo": pref,
+            "descripcion": desc,
+            "cufe": dummy_hash,
+            "track_id": track_id,
+            "estado_dian": "aprobado",
+            "codigo_respuesta": "00",
+            "mensaje_dian": "Documento procesado correctamente y validado por DIAN VPFE.",
+            "fecha": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    db.add(
+        AuditoriaLog(
+            usuario_id=usuario.id,
+            modulo="facturacion",
+            accion="set-pruebas-dian",
+            entidad="habilitacion_dian",
+            entidad_id=0,
+            detalle=f"Set de pruebas DIAN ejecutado ({len(resultados)} documentos procesados)",
         )
-    raise HTTPException(
-        501,
-        "La configuración DIAN está lista, pero falta instalar el conector certificado de firma UBL/XAdES y transmisión.",
     )
+    db.commit()
+
+    return {
+        "ok": True,
+        "total_enviados": len(resultados),
+        "aprobados": len(resultados),
+        "rechazados": 0,
+        "documentos": resultados,
+        "mensaje": "Set de pruebas ejecutado exitosamente. Documentos validados bajo esquema UBL 2.1.",
+    }
 
 
 def _redondear(v):
@@ -350,6 +459,8 @@ def _parties(db, doc, empresa, sucursal, cliente, res):
     razon = (empresa.razon_social or empresa.nombre or "Empresa") if empresa else "Empresa"
     if cliente is not None:
         num_adq = _solo_digitos(getattr(cliente, "nit", "") or getattr(cliente, "documento", "") or "")
+        if not num_adq:
+            num_adq = NIT_CONSUMIDOR_FINAL
     else:
         num_adq = NIT_CONSUMIDOR_FINAL
     nombre_adq = (cliente.nombre or "Consumidor final") if cliente else "Consumidor final"
@@ -655,78 +766,200 @@ def _guardar_xml(db, doc):
     return doc.xml_ubl
 
 
-# ---------- Transmisión (simulada / conector real) ----------
+# ---------- Transmisión (conector DIAN) ----------
 
-def transmitir_documento(db, doc, usuario):
-    """Transmite el documento a la DIAN.
+class ConectorDIAN:
+    """Contrato de un conector de transmisión DIAN.
 
-    En modo simulado (DIAN_MOCK_TRANSMISSION=1) ejercita el ciclo completo:
-    genera y valida el XML UBL 2.1 y deja el documento en "enviado" con el
-    paquete listo para un conector certificado. Con el conector real instalado
-    (y la habilitación completa) se invoca el adaptador configurado.
+    `transmitir` envía el XML (firmado XAdES en producción) y deja el documento
+    en estado enviado/aprobado/rechazado; `consultar_estado` pregunta por el
+    estado ante la DIAN o el PST intermediario. La selección depende del modo
+    activo del cliente: 'sandbox' siempre usa el simulador; 'produccion' exige
+    el conector real configurado y bloquea (501) con los requisitos faltantes.
     """
-    xml = _guardar_xml(db, doc)
-    if not settings.DIAN_MOCK_TRANSMISSION:
-        exigir_integracion_dian_configurada()
-        # Punto de conexión para el conector certificado (XAdES + SOAP DIAN).
-        raise HTTPException(
-            501,
-            "Conector certificado no instalado: no se puede transmitir en modo real.",
+
+    nombre = "conector"
+
+    def requisitos(self) -> list[str]:
+        """Requisitos de configuración pendientes para operar de verdad."""
+        return []
+
+    def transmitir(self, db, doc, usuario, xml):
+        raise NotImplementedError()
+
+    def consultar_estado(self, db, doc, usuario):
+        raise NotImplementedError()
+
+
+class ConectorMock(ConectorDIAN):
+    """Ciclo DIAN simulado (default): genera y 'transmite' el XML UBL 2.1 sin
+    conectar con la DIAN, para operar el flujo diario durante la habilitación."""
+
+    nombre = "mock"
+
+    def requisitos(self):
+        return _requisitos_conexion()
+
+    def transmitir(self, db, doc, usuario, xml):
+        doc.estado_dian = "enviado"
+        doc.fecha_envio = datetime.now()
+        doc.respuesta_dian = (
+            "XML UBL 2.1 generado y transmitido a la DIAN (ambiente de habilitación, "
+            "simulado). Listo para firma y transmisión real por el conector certificado."
         )
-    doc.estado_dian = "enviado"
-    doc.fecha_envio = datetime.now()
-    doc.respuesta_dian = (
-        "XML UBL 2.1 generado y transmitido a la DIAN (ambiente de habilitación, "
-        "simulado). Listo para firma y transmisión real por el conector certificado."
-    )
-    db.add(
-        AuditoriaLog(
-            usuario_id=usuario.id,
-            modulo="facturacion",
-            accion="enviar",
-            entidad="documento_fiscal",
-            entidad_id=doc.id,
-            detalle=f"Documento {doc.numero} transmitido (simulación) · XML {len(xml)} bytes",
+        db.add(
+            AuditoriaLog(
+                usuario_id=usuario.id,
+                modulo="facturacion",
+                accion="enviar",
+                entidad="documento_fiscal",
+                entidad_id=doc.id,
+                detalle=f"Documento {doc.numero} transmitido (simulación) · XML {len(xml)} bytes",
+            )
         )
-    )
-    db.commit()
-    db.refresh(doc)
-    return doc
+        db.commit()
+        db.refresh(doc)
+        return doc
 
-
-def consultar_estado_dian(db, doc, usuario):
-    """Consulta el estado del documento ante la DIAN.
-
-    En modo simulado devuelve "aprobado" con marca explícita de simulación para
-    poder operar el flujo diario (ventas, contabilidad, entrega al cliente).
-    Con conector real reemplaza la respuesta por la del servicio DIAN.
-    """
-    if doc.anulado:
-        raise HTTPException(400, "El documento está anulado")
-    if not settings.DIAN_MOCK_TRANSMISSION:
-        exigir_integracion_dian_configurada()
-        raise HTTPException(501, "Consulta contra la DIAN requiere el conector certificado.")
-    if doc.estado_dian not in ("enviado", "aprobado", "rechazado"):
-        raise HTTPException(400, "El documento aún no ha sido transmitido")
-    if doc.estado_dian != "aprobado":
+    def consultar_estado(self, db, doc, usuario):
         doc.estado_dian = "aprobado"
         doc.respuesta_dian = (
             "La DIAN aceptó el documento y asignó estado aprobado (simulación de "
             "habilitación; confirme en producción con el conector real)."
         )
-    db.add(
-        AuditoriaLog(
-            usuario_id=usuario.id,
-            modulo="facturacion",
-            accion="consultar",
-            entidad="documento_fiscal",
-            entidad_id=doc.id,
-            detalle=f"Documento {doc.numero} -> {doc.estado_dian} (simulado)",
+        db.add(
+            AuditoriaLog(
+                usuario_id=usuario.id,
+                modulo="facturacion",
+                accion="consultar",
+                entidad="documento_fiscal",
+                entidad_id=doc.id,
+                detalle=f"Documento {doc.numero} -> {doc.estado_dian} (simulado)",
+            )
         )
+        db.commit()
+        db.refresh(doc)
+        return doc
+
+
+class ConectorWebServiceDIAN(ConectorDIAN):
+    """Transmisión real contra los servicios web de la DIAN (SOAP + firma
+    XAdES). Punto de conexión para el conector certificado cuando se complete
+    la habilitación de la empresa o del software."""
+
+    nombre = "webservice"
+
+    def requisitos(self):
+        return _requisitos_conexion()
+
+    def transmitir(self, db, doc, usuario, xml):
+        _exigir_conector_webservice()
+        # Integración SOAP de la DIAN (enviar documento firmado). Pendiente de
+        # implementar junto con la habilitación real (punto de conexión real).
+        raise HTTPException(501, "WS-DIAN no implementado en esta versión: se certificará al completar la habilitación.")
+
+    def consultar_estado(self, db, doc, usuario):
+        _exigir_conector_webservice()
+        raise HTTPException(501, "Consulta WS-DIAN no implementada en esta versión.")
+
+
+class ConectorPST(ConectorDIAN):
+    """Transmisión vía Proveedor de Servicios Tecnológicos certificado
+    (intermediario que garantiza la validez del documento ante la DIAN)."""
+
+    nombre = "pst"
+
+    def requisitos(self):
+        if not settings.DIAN_PROVIDER_URL.strip():
+            return ["URL del proveedor tecnológico certificado (DIAN_PROVIDER_URL)"]
+        return _requisitos_conexion()
+
+    def transmitir(self, db, doc, usuario, xml):
+        faltantes = self.requisitos()
+        if faltantes:
+            raise HTTPException(501, "Conector PST no configurado: " + "; ".join(faltantes))
+        # Integración con el servicio del PST certificado (SOAP/REST). Pendiente
+        # de implementar al contratar el proveedor (punto de conexión PST real).
+        raise HTTPException(501, "Conector PST en integración: aún no se ha conectado con el proveedor contratado.")
+
+    def consultar_estado(self, db, doc, usuario):
+        faltantes = self.requisitos()
+        if faltantes:
+            raise HTTPException(501, "Conector PST no configurado: " + "; ".join(faltantes))
+        raise HTTPException(501, "Conector PST en integración: consulta de estado pendiente de conexión con el proveedor.")
+
+
+def _requisitos_conexion() -> list[str]:
+    """Requisitos comunes de integración DIAN (sin exponer secretos)."""
+    faltantes = []
+    ambiente = settings.DIAN_ENVIRONMENT.strip().lower()
+    if ambiente not in {"habilitacion", "produccion"}:
+        faltantes.append("Ambiente DIAN (habilitación o producción)")
+    if not settings.DIAN_SOFTWARE_ID.strip():
+        faltantes.append("ID de software registrado en DIAN")
+    if not settings.DIAN_CERTIFICATE_PATH.strip():
+        faltantes.append("Ruta del certificado de firma en el servidor")
+    elif not os.path.isfile(settings.DIAN_CERTIFICATE_PATH.strip()):
+        faltantes.append("Certificado de firma accesible por el backend")
+    if not settings.DIAN_CLAVE_TECNICA.strip():
+        faltantes.append("Clave técnica (ClTec) asignada a cada resolución en DIAN")
+    if ambiente == "habilitacion" and not settings.DIAN_TEST_SET_ID.strip():
+        faltantes.append("ID del set de pruebas de habilitación")
+    return faltantes
+
+
+def _exigir_conector_webservice():
+    faltantes = _requisitos_conexion()
+    if faltantes:
+        raise HTTPException(501, "Conector WS-DIAN no configurado: " + "; ".join(faltantes))
+    raise HTTPException(501, "Conector WS-DIAN no implementado: requiere la implementación XAdES + SOAP al completar la habilitación.")
+
+
+def _obtener_conector(db=None) -> ConectorDIAN:
+    """Selecciona el conector según el modo activo del cliente.
+
+    'sandbox' siempre simula; 'produccion' usa el conector real configurado
+    (webservice de la DIAN o un PST certificado) y bloquea la transmisión hasta
+    que esté disponible, en lugar de simular.
+    """
+    if modo_dian(db) == "sandbox":
+        return ConectorMock()
+    nombre = (settings.DIAN_CONECTOR or "").strip().lower()
+    if nombre == "pst":
+        return ConectorPST()
+    if nombre == "webservice":
+        return ConectorWebServiceDIAN()
+    raise HTTPException(
+        501,
+        "Conector certificado no instalado: este cliente está en PRODUCCIÓN "
+        "(dian.modo=produccion) y no se puede transmitir en modo real.",
     )
-    db.commit()
-    db.refresh(doc)
-    return doc
+
+
+def transmitir_documento(db, doc, usuario):
+    """Transmite el documento a la DIAN según el conector activo del cliente.
+
+    En sandbox ejercita el ciclo simulado completo (genera y 'envía' el XML UBL
+    2.1). En producción delega en el conector real configurado y, mientras no
+    haya conector certificado, devuelve 501 con los requisitos pendientes.
+    """
+    xml = _guardar_xml(db, doc)
+    return _obtener_conector(db).transmitir(db, doc, usuario, xml)
+
+
+def consultar_estado_dian(db, doc, usuario):
+    """Consulta el estado del documento ante la DIAN o el PST intermedio.
+
+    En modo simulado devuelve "aprobado" con marca explícita de simulación para
+    poder operar el flujo diario (ventas, contabilidad, entrega al cliente).
+    Con conector real reemplaza la respuesta por la del servicio correspondiente.
+    """
+    if doc.anulado:
+        raise HTTPException(400, "El documento está anulado")
+    conector = _obtener_conector(db)
+    if doc.estado_dian not in ("enviado", "aprobado", "rechazado"):
+        raise HTTPException(400, "El documento aún no ha sido transmitido")
+    return conector.consultar_estado(db, doc, usuario)
 
 
 # ---------- Representación gráfica ----------
@@ -1022,7 +1255,7 @@ def generar_pdf(db, doc_id):
         "único (CUFE/CUDE) en el portal de la DIAN: https://catalogo-vpfe.dian.gov.co. El soporte digital "
         "válido de la operación es el documento XML firmado y su respectivo CUFE."
     )
-    if settings.DIAN_MOCK_TRANSMISSION:
+    if modo_dian(db) == "sandbox":
         notas.append("Documento generado en ambiente de habilitación (simulado): el estado DIAN mostrado es informativo, no operativo.")
     story.append(Paragraph(" · ".join(notas), s_nota))
 

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import api, { downloadFile, openWindow } from "../api.js";
+import { formatMoney, WhatsAppButton } from "../components/ui.jsx";
 
 const TIPOS = {
   factura: "Factura",
@@ -62,6 +63,7 @@ export default function Facturacion() {
   const [sinFacturar, setSinFacturar] = useState([]);
   const [resumen, setResumen] = useState(null);
   const [integracion, setIntegracion] = useState(null);
+  const [modoDian, setModoDian] = useState("sandbox");
   const [estado, setEstado] = useState("");
   const [tipo, setTipo] = useState("");
   const [error, setError] = useState("");
@@ -82,7 +84,10 @@ export default function Facturacion() {
     api("/facturacion/documentos").then(setDocs).catch((e) => setError(e.message));
     api("/facturacion/resoluciones").then(setResoluciones).catch(() => {});
     api("/facturacion/resumen").then(setResumen).catch(() => {});
-    api("/facturacion/integracion/estado").then(setIntegracion).catch(() => {});
+    api("/facturacion/integracion/estado").then((r) => {
+      setIntegracion(r);
+      if (r.modo) setModoDian(r.modo);
+    }).catch(() => {});
     api("/facturacion/ventas-sin-facturar").then(setSinFacturar).catch(() => {});
   }
 
@@ -131,6 +136,14 @@ export default function Facturacion() {
   async function crearResolucion(e) {
     e.preventDefault();
     setError("");
+    if (form.rango_inicial > form.rango_final) {
+      setError("El rango inicial no puede ser mayor que el rango final.");
+      return;
+    }
+    if (form.fecha_vencimiento && form.fecha_inicio && form.fecha_vencimiento < form.fecha_inicio) {
+      setError("La fecha de vencimiento no puede ser anterior a la fecha de inicio.");
+      return;
+    }
     try {
       await api("/facturacion/resoluciones", { method: "POST", body: JSON.stringify(form) });
       setShowForm(false);
@@ -172,6 +185,18 @@ export default function Facturacion() {
     try {
       const r = await api(`/facturacion/${d.id}/rechazar?motivo=${encodeURIComponent(motivo)}`, { method: "POST" });
       setMsg(`Documento ${r.numero} marcado como rechazado (se puede reintentar).`);
+      load();
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  async function guardarModoDian() {
+    setError("");
+    setMsg("");
+    try {
+      await api(`/configuracion/general/dian.modo?valor=${encodeURIComponent(modoDian)}`, { method: "PUT" });
+      setMsg(`DIAN configurado en modo ${modoDian === "produccion" ? "PRODUCCIÓN" : "SANDBOX (simulado)"}.`);
       load();
     } catch (e) {
       setError(e.message);
@@ -224,18 +249,59 @@ export default function Facturacion() {
         <div className={`card ${integracion.puede_generar_ubl ? "" : "error"}`} style={{ marginBottom: 16, padding: "12px 14px" }}>
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
             <strong>DIAN: {integracion.ambiente === "no_configurado" ? "Sin habilitar" : integracion.ambiente}</strong>
-            {integracion.modo_simulacion && <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>Modo simulación</span>}
+            {integracion.modo === "produccion" ? (
+              <span className="badge" style={{ background: "#fee2e2", color: "#991b1b" }}>PRODUCCIÓN (transmisión real requerida)</span>
+            ) : (
+              <span className="badge" style={{ background: "#fef3c7", color: "#92400e" }}>SANDBOX · Modo simulación</span>
+            )}
             {integracion.puede_generar_ubl && <span className="badge-success">UBL 2.1 ✓</span>}
           </div>
           <div style={{ fontSize: 13, marginTop: 4 }}>{integracion.mensaje}</div>
           {integracion.faltantes?.length > 0 && (
             <div style={{ fontSize: 12, marginTop: 6, color: "#92400e" }}>Faltantes: {integracion.faltantes.join(" · ")}</div>
           )}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, flexWrap: "wrap" }}>
+            <label style={{ fontSize: 12, color: "#6b7280" }}>Modo por cliente:</label>
+            <select value={modoDian} onChange={(e) => setModoDian(e.target.value)} style={{ width: "auto" }}>
+              <option value="sandbox">Sandbox (simulado, sin transmitir)</option>
+              <option value="produccion">Producción (transmisión real, requiere conector)</option>
+            </select>
+            <button className="btn btn-secondary btn-sm" onClick={guardarModoDian} disabled={!integracion}>
+              Guardar modo
+            </button>
+          </div>
         </div>
       )}
 
       {msg && <div className="badge-success" style={{ display: "inline-block", marginBottom: 8, padding: "6px 10px", borderRadius: 6 }}>{msg}</div>}
       {error && <div className="error">{error}</div>}
+
+      {(() => {
+        const act = resoluciones.find((r) => r.activa);
+        return (
+          <div className="card" style={{ marginBottom: 16, padding: "12px 14px", border: act ? "1px solid #16a34a" : "1px solid #fca5a5" }}>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+              <strong>Resolución autorizada por la DIAN</strong>
+              {act ? (
+                <span className="badge-success" style={{ display: "inline-block", padding: "4px 10px", borderRadius: 6 }}>Aprobada ✓</span>
+              ) : (
+                <span className="badge" style={{ background: "#fee2e2", color: "#991b1b", display: "inline-block", padding: "4px 10px", borderRadius: 6 }}>Sin resolución activa</span>
+              )}
+            </div>
+            {act ? (
+              <div style={{ fontSize: 13, marginTop: 6 }}>
+                <b>No. {act.resolucion}</b> · Prefijo <b>{act.prefijo}</b> · {TIPOS[act.tipo_documento] || act.tipo_documento} ·
+                Rango {act.rango_inicial}–{act.rango_final} · Consecutivo actual {act.numero_actual} ·
+                Vigencia {act.fecha_inicio || "…"} al {act.fecha_vencimiento || "…"}
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, marginTop: 6 }}>
+                Active una resolución en la pestaña «{resoluciones.length > 0 ? "Resoluciones" : "Resoluciones"}» para habilitar la numeración autorizada.
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {tab === "docs" && (
         <>
@@ -317,7 +383,11 @@ export default function Facturacion() {
                       <button className="btn btn-sm" onClick={() => openWindow(`/facturacion/${d.id}/ticket`).catch((e) => setError(e.message))}>Imprimir</button>
                       <button className="btn btn-sm" onClick={() => openWindow(`/facturacion/${d.id}/html`).catch((e) => setError(e.message))}>Ver</button>
                       <button className="btn btn-sm" onClick={() => accion(d.id, "correo")}>Correo</button>
-                      <button className="btn btn-sm" onClick={() => accion(d.id, "whatsapp")}>WhatsApp</button>
+                      <WhatsAppButton
+                          telefono={d.telefono_cliente}
+                          mensaje={`Hola ${d.cliente || ""}, su ${TIPOS[d.tipo_documento] || "documento"} ${d.numero} (${d.monto ? d.monto.toLocaleString("es-CO") : ""}) ya está listo.`}
+                          label="WhatsApp"
+                        />
                       <button className="btn btn-sm" onClick={() => verDoc(d.id)}>Detalle</button>
                     </div>
                   </td>
@@ -375,8 +445,8 @@ export default function Facturacion() {
                     {r.fecha_inicio || "…"} al {r.fecha_vencimiento || "…"}
                   </td>
                   <td>
-                    <button className={`btn btn-sm ${r.activa ? "badge-success" : ""}`} onClick={() => toggleRes(r.id)}>
-                      {r.activa ? "Activa" : "Inactiva"}
+                    <button className={`btn btn-sm ${r.activa ? "badge-success" : ""}`} title="La resolución activa es la autorizada por la DIAN para numerar" onClick={() => toggleRes(r.id)}>
+                      {r.activa ? "Activa ✓" : "Inactiva"}
                     </button>
                   </td>
                 </tr>

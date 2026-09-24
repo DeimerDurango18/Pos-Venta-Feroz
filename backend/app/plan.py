@@ -1,3 +1,4 @@
+import datetime
 import json
 from sqlalchemy.orm import Session
 
@@ -73,6 +74,115 @@ LICENCIA_VACIA = {
     "modulos_extra": [],
     "modulos_ocultos": [],
 }
+
+# ---------- Catálogo de planes de suscripción ----------
+
+_SIN_REST = set(MODULOS_TODOS) - _SIN_RESTAURANT - {"apartados", "fidelizacion"}
+POR_PLAN = {
+    "esencial": ["dashboard", "pos", "productos", "inventario", "ventas", "caja", "clientes", "reportes", "configuracion", "seguridad"],
+    "avanzado": [m for m in MODULOS_TODOS if m in _SIN_REST] + ["compras", "proveedores", "cartera", "promociones", "facturacion", "vendedores"],
+    "completo": MODULOS_TODOS,
+    "gastronomia": MODULOS_TODOS,
+}
+
+PLANES = {
+    "esencial": {
+        "nombre": "Esencial",
+        "precio_mensual": 49000,
+        "limite_usuarios": 1,
+        "modulos": POR_PLAN["esencial"],
+        "descripcion": "Para negocios pequeños que venden en mostrador: ventas, inventario y caja.",
+    },
+    "avanzado": {
+        "nombre": "Avanzado",
+        "precio_mensual": 89000,
+        "limite_usuarios": 3,
+        "modulos": POR_PLAN["avanzado"],
+        "descripcion": "Agrega compras, proveedores, cartera, promociones y facturación electrónica.",
+    },
+    "completo": {
+        "nombre": "Completo",
+        "precio_mensual": 129000,
+        "limite_usuarios": None,
+        "modulos": POR_PLAN["completo"],
+        "descripcion": "Todos los módulos, usuarios ilimitados y soporte prioritario.",
+    },
+    "gastronomia": {
+        "nombre": "Gastronomía",
+        "precio_mensual": 159000,
+        "limite_usuarios": None,
+        "modulos": POR_PLAN["gastronomia"],
+        "descripcion": "Mesas, comandas, domicilios, apartados y fidelización para restaurantes.",
+    },
+}
+
+
+def catalogo_planes() -> list[dict]:
+    return [
+        {
+            "clave": clave,
+            **plan,
+            "modulos": plan["modulos"],
+        }
+        for clave, plan in PLANES.items()
+    ]
+
+
+def leer_suscripcion(db: Session) -> dict:
+    """Suscripción estructurada del negocio (plan, vence, estado)."""
+    conf = db.query(Configuracion).filter(Configuracion.clave == "suscripcion").first()
+    sus = {}
+    if conf and conf.valor:
+        try:
+            sus = json.loads(conf.valor)
+        except ValueError:
+            sus = {}
+    sus.setdefault("plan", "")
+    sus.setdefault("vence", "")
+    return sus
+
+
+def sugerir_plan(habilitados: set[str]) -> str:
+    """Elige el plan más pequeño cuyo catálogo cubra los módulos habilitados."""
+    habilitados = set(habilitados)
+    for clave in ("esencial", "avanzado", "completo", "gastronomia"):
+        if habilitados.issubset(set(POR_PLAN[clave])):
+            return clave
+    mejor = "completo"
+    mejor_score = -1
+    for clave, mods in POR_PLAN.items():
+        score = len(set(mods) & habilitados)
+        if score > mejor_score:
+            mejor, mejor_score = clave, score
+    return mejor
+
+
+def estado_suscripcion(db: Session) -> dict:
+    sus = leer_suscripcion(db)
+    plan = sus.get("plan", "")
+    vence = sus.get("vence", "")
+    hoy = datetime.date.today()
+    if vence:
+        try:
+            fecha = __import__("datetime").date.fromisoformat(vence)
+            vencida = fecha < hoy
+            dias = (fecha - hoy).days
+        except ValueError:
+            vencida = False
+            dias = None
+    else:
+        vencida = False
+        dias = None
+    estado = "vencida" if vencida else ("activa" if plan else "prueba")
+    datos_plan = PLANES.get(plan) if plan else None
+    return {
+        "plan": plan,
+        "plan_nombre": datos_plan["nombre"] if datos_plan else ("Prueba" if not plan else plan),
+        "vence": vence,
+        "dias_restantes": dias,
+        "estado": estado,
+        "planes": catalogo_planes(),
+    }
 
 
 def leer_licencia(db: Session) -> dict:

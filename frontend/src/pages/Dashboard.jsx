@@ -10,6 +10,7 @@ export default function Dashboard() {
   const [top, setTop] = useState([]);
   const [alertas, setAlertas] = useState(null);
   const [sug, setSug] = useState([]);
+  const [metas, setMetas] = useState(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -30,6 +31,9 @@ export default function Dashboard() {
       .catch(() => {});
     api("/inventario/sugerir-reposicion")
       .then((r) => setSug((r?.sugerencias || []).slice(0, 6)))
+      .catch(() => {});
+    api("/reportes/metas")
+      .then(setMetas)
       .catch(() => {});
   }, []);
 
@@ -148,6 +152,102 @@ export default function Dashboard() {
         />
       </div>
 
+      {metas && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <h2 style={{ fontSize: 16 }}>🎯 Metas de venta</h2>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {metas.vs_ayer_pct != null && (
+                <span className={`chip ${metas.vs_ayer_pct >= 0 ? "badge-success" : "badge"}`}>
+                  vs ayer {metas.vs_ayer_pct >= 0 ? "+" : ""}{metas.vs_ayer_pct.toLocaleString("es-CO")}% · {formatMoney(metas.ventas_ayer)}
+                </span>
+              )}
+              {metas.vs_promedio_7d_pct != null && (
+                <span className={`chip ${metas.vs_promedio_7d_pct >= 0 ? "badge-success" : "badge"}`}>
+                  vs promedio 7d {metas.vs_promedio_7d_pct >= 0 ? "+" : ""}{metas.vs_promedio_7d_pct.toLocaleString("es-CO")}%
+                </span>
+              )}
+              <span className="chip">📊 {formatMoney(metas.ventas_semana)} en 7 días</span>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 260px), 1fr))", gap: 16, marginTop: 12 }}>
+            {[
+              {
+                titulo: "Meta diaria",
+                meta: metas.meta_diaria,
+                actual: metas.ventas_hoy,
+                pct: metas.avance_diario_pct,
+                faltante: metas.faltante_diario,
+                icono: "☀️",
+              },
+              {
+                titulo: "Meta mensual",
+                meta: metas.meta_mensual,
+                actual: metas.ventas_mes,
+                pct: metas.avance_mensual_pct,
+                faltante: metas.faltante_mensual,
+                icono: "🗓️",
+              },
+            ].map((m) => (
+              <div key={m.titulo} style={{ border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <b>{m.icono} {m.titulo}</b>
+                  <span className="chip" style={{ fontSize: 13 }}>
+                    {formatMoney(m.actual)} / {formatMoney(m.meta)}
+                  </span>
+                </div>
+                <div className="prog-track" style={{ height: 12 }}>
+                  <div
+                    className="prog-fill"
+                    style={{
+                      width: `${m.pct == null ? 0 : Math.min(100, m.pct)}%`,
+                      background: m.pct != null && m.pct >= 100 ? "#10b981" : "var(--brand1)",
+                    }}
+                  />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 12.5 }}>
+                  {m.pct == null ? (
+                    <span style={{ color: "var(--muted)" }}>
+                      Define la meta en <Link to="/configuracion" style={{ color: "var(--brand1)" }}>Configuración</Link>
+                    </span>
+                  ) : (
+                    <>
+                      <b style={{ color: m.pct >= 100 ? "#059669" : m.pct >= 80 ? "#d97706" : "#dc2626" }}>
+                        {m.pct >= 100 ? "¡Meta cumplida! 🎉" : `${m.pct.toLocaleString("es-CO")}% de avance`}
+                      </b>
+                      <span style={{ color: "var(--muted)" }}>{m.faltante > 0 ? `Faltan ${formatMoney(m.faltante)}` : "Superado"}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            <div style={{ border: "1px solid var(--line)", borderRadius: 14, padding: 14 }}>
+              <b style={{ display: "block", marginBottom: 8 }}>🏆 Ranking de vendedores hoy</b>
+              {metas.ranking_vendedores.length === 0 ? (
+                <span style={{ color: "var(--muted)", fontSize: 13 }}>Aún no hay ventas registradas hoy.</span>
+              ) : (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {metas.ranking_vendedores.slice(0, 5).map((v, i) => (
+                    <div key={v.usuario_id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                      <span style={{ fontSize: 16 }}>{["🥇", "🥈", "🥉"][i] || `${i + 1}.`}</span>
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{v.vendedor}</span>
+                      {v.cumplimiento_meta != null && (
+                        <span className={`chip ${v.cumplimiento_meta >= 100 ? "badge-success" : ""}`} style={{ fontSize: 11 }}>
+                          {v.cumplimiento_meta >= 100 ? "✅ " : ""}{v.cumplimiento_meta.toLocaleString("es-CO")}% meta
+                        </span>
+                      )}
+                      <b style={{ whiteSpace: "nowrap" }}>{formatMoney(v.ventas_hoy)}</b>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 18, marginBottom: 20 }}>
         <ChartCard title="Medios de pago" subtitle="Distribución de la recaudación" height={250}>
           <Donut data={medios} nameKey="name" valueKey="value" money centerLabel="Recaudado" centerValue={formatMoney(medios.reduce((a, m) => a + Number(m.value), 0))} />
@@ -163,14 +263,14 @@ export default function Dashboard() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", gap: 18 }}>
-        <ChartCard title="Ventas por cajero" subtitle="Total facturado" height={250} accent="#4f46e5">
+        <ChartCard title="Ventas por cajero" subtitle="Total facturado" height={250} accent="#0e9f74">
           <Donut data={porCajero} nameKey="name" valueKey="value" money centerLabel="Total" colors={PALETA.slice(2)} />
         </ChartCard>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 140px), 1fr))", gap: 16 }}>
-          <KpiCard label="Inventario valorizado" value={formatMoney(data.inventario_valorizado)} icon="🏬" accent="#4f46e5" />
+          <KpiCard label="Inventario valorizado" value={formatMoney(data.inventario_valorizado)} icon="🏬" accent="#0e9f74" />
           <KpiCard label="Productos agotados" value={data.productos_agotados ?? 0} icon="🚫" accent="#f43f5e" />
-          <KpiCard label="Clientes" value={data.clientes ?? 0} icon="👥" accent="#3b82f6" />
+          <KpiCard label="Clientes" value={data.clientes ?? 0} icon="👥" accent="#0e9f74" />
           <KpiCard label="Cuentas por cobrar" value={formatMoney(data.cuentas_por_cobrar)} icon="🧾" accent="#f59e0b" />
         </div>
       </div>

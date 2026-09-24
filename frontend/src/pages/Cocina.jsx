@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../api.js";
+import { useAuth } from "../contexts/AuthContext.jsx";
 
 function beep() {
   try {
@@ -33,12 +35,30 @@ function mmss(ms) {
 }
 
 export default function Cocina() {
+  const navigate = useNavigate();
+  const { logout } = useAuth();
   const [comandas, setComandas] = useState([]);
   const [err, setErr] = useState("");
   const [, setPulso] = useState(0);
   const [flash, setFlash] = useState("");
+  const [fs, setFs] = useState(false);
   const llegada = useRef({});
   const prevIds = useRef([]);
+
+  useEffect(() => {
+    const onFs = () => setFs(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFs);
+    const onKey = (e) => {
+      if (e.key === "Escape" && document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFs);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
   async function load() {
     try {
@@ -99,6 +119,11 @@ export default function Cocina() {
     else document.documentElement.requestFullscreen?.();
   };
 
+  const salirSesion = () => {
+    logout();
+    navigate("/login");
+  };
+
   return (
     <div className="cocina">
       <style>{`
@@ -134,10 +159,12 @@ export default function Cocina() {
             {contador} líneas pendientes · {pendientes.length} comandas activas · actualiza cada 5 s
           </div>
         </div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span className="kds-reloj">{new Date().toLocaleTimeString("es-CO")}</span>
+          <button className="btn btn-sm" onClick={() => navigate("/")}>🏠 Salir de módulo</button>
+          <button className="btn btn-sm" onClick={salirSesion} title="Cerrar sesión y volver al login">⎋ Cerrar sesión</button>
           <button className="btn btn-sm" onClick={() => document.location.reload()}>↻</button>
-          <button className="btn btn-sm" onClick={fullscreen}>{document.fullscreenElement ? "⤓ Salir" : "⛶ Pantalla"}</button>
+          <button className="btn btn-sm" onClick={fullscreen}>{fs ? "⤓ Salir pantalla" : "⛶ Pantalla"}</button>
         </div>
       </div>
 

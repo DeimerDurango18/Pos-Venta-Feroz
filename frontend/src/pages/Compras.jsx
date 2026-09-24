@@ -465,7 +465,7 @@ export default function Compras() {
                 <div className="card" style={{ margin: 0 }}><div className="muted" style={{ fontSize: 12 }}>Total comprado</div><div style={{ fontSize: 18, fontWeight: 700 }}>{formatMoney(estadoCuenta.total_comprado)}</div></div>
                 <div className="card" style={{ margin: 0 }}><div className="muted" style={{ fontSize: 12 }}>Devoluciones</div><div style={{ fontSize: 18, fontWeight: 700 }}>{formatMoney(estadoCuenta.total_devoluciones)}</div></div>
                 <div className="card" style={{ margin: 0 }}><div className="muted" style={{ fontSize: 12 }}>Abonado</div><div style={{ fontSize: 18, fontWeight: 700 }}>{formatMoney(estadoCuenta.total_abonos)}</div></div>
-                <div className="card" style={{ margin: 0 }}><div className="muted" style={{ fontSize: 12 }}>Saldo pendiente</div><div style={{ fontSize: 18, fontWeight: 700, color: "#4f46e5" }}>{formatMoney(estadoCuenta.saldo_pendiente)}</div></div>
+                <div className="card" style={{ margin: 0 }}><div className="muted" style={{ fontSize: 12 }}>Saldo pendiente</div><div style={{ fontSize: 18, fontWeight: 700, color: "#0e9f74" }}>{formatMoney(estadoCuenta.saldo_pendiente)}</div></div>
               </div>
               <h4 style={{ fontSize: 14, marginBottom: 8 }}>Cuentas por pagar</h4>
               <table className="table">

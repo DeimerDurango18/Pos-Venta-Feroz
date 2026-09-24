@@ -74,6 +74,7 @@ class ComandaDetalle(BaseModel):
     precio = Column(Numeric(12, 2), default=0)
     preparacion = Column(String(50))
     entregado = Column(Boolean, default=False)
+    cortesia = Column(Boolean, default=False)
 
     comanda = relationship("Comanda", back_populates="detalle")
     producto = relationship("Producto")

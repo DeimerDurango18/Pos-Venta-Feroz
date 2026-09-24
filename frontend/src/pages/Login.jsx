@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext.jsx";
 import api from "../api.js";
 
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const tokenInicial = params.get("token") || "";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -14,7 +16,7 @@ export default function Login() {
   const [recEmail, setRecEmail] = useState("");
   const [recMsg, setRecMsg] = useState("");
   const [recErr, setRecErr] = useState("");
-  const [rstToken, setRstToken] = useState("");
+  const [rstToken, setRstToken] = useState(tokenInicial);
   const [rstPass, setRstPass] = useState("");
 
   async function handleSubmit(e) {
@@ -64,7 +66,7 @@ export default function Login() {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        background: "linear-gradient(130deg, #0f172a 0%, #1e293b 45%, #4338ca 100%)",
+        background: "linear-gradient(130deg, #043a2c 0%, #065f46 45%, #0b7a59 100%)",
         position: "relative",
         overflow: "hidden",
       }}
@@ -116,14 +118,14 @@ export default function Login() {
               placeItems: "center",
               fontSize: 30,
               color: "#fff",
-              background: "linear-gradient(135deg, #6366f1, #4f46e5)",
-              boxShadow: "0 14px 30px -10px rgba(99,102,241,.6)",
+              background: "linear-gradient(135deg, #0e9f74, #0b7a59)",
+              boxShadow: "0 14px 30px -10px rgba(14,159,116,.6)",
             }}
           >
             🛒
           </div>
           <h1 style={{ fontSize: 27, fontWeight: 800, letterSpacing: "-0.03em" }}>
-            POS <span style={{ background: "linear-gradient(120deg,#4f46e5,#3b82f6)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Feroz</span>
+            POS <span style={{ background: "linear-gradient(120deg,#0e9f74,#3eb489)", WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent" }}>Feroz</span>
           </h1>
           <p style={{ color: "var(--muted)", fontSize: 13.5, marginTop: 4 }}>
             Sistema de Punto de Venta · Tiendas locales
