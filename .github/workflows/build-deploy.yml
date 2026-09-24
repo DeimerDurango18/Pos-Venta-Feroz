@@ -54,8 +54,10 @@ jobs:
       - name: Compute image tags
         id: tags
         run: |
+          OWNER="${{ github.repository_owner }}"
+          OWNER_LOW=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
           SHA="${GITHUB_SHA::7}"
-          TAGS="ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:latest,ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:${SHA}"
+          TAGS="ghcr.io/$OWNER_LOW/pos-${{ matrix.component }}:latest,ghcr.io/$OWNER_LOW/pos-${{ matrix.component }}:${SHA}"
           if [ -n "$DH_USER" ]; then
             TAGS="${TAGS},docker.io/$DH_USER/pos-${{ matrix.component }}:latest,docker.io/$DH_USER/pos-${{ matrix.component }}:${SHA}"
           fi
