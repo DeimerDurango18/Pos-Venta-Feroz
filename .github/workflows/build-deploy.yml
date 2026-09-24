@@ -21,11 +21,14 @@ env:
   GHCR_ORG: ${{ github.repository_owner }}
 
 jobs:
-  build:
+build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    env:
+      DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,20 +44,20 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Login Docker Hub
+        if: env.DH_USER != ''
         uses: docker/login-action@v3
-        if: secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != ''
         with:
           registry: docker.io
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          username: ${{ env.DH_USER }}
+          password: ${{ env.DH_TOKEN }}
 
       - name: Compute image tags
         id: tags
         run: |
           SHA="${GITHUB_SHA::7}"
           TAGS="ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:latest,ghcr.io/${{ github.repository_owner }}/pos-${{ matrix.component }}:${SHA}"
-          if [ -n "${{ secrets.DOCKERHUB_USERNAME }}" ]; then
-            TAGS="${TAGS},docker.io/${{ secrets.DOCKERHUB_USERNAME }}/pos-${{ matrix.component }}:latest,docker.io/${{ secrets.DOCKERHUB_USERNAME }}/pos-${{ matrix.component }}:${SHA}"
+          if [ -n "$DH_USER" ]; then
+            TAGS="${TAGS},docker.io/$DH_USER/pos-${{ matrix.component }}:latest,docker.io/$DH_USER/pos-${{ matrix.component }}:${SHA}"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
@@ -74,12 +77,15 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && secrets.VPS_HOST != ''
+    if: needs.build.result == 'success' && github.ref == 'refs/heads/main'
     environment: production
+    env:
+      HAS_VPS: ${{ secrets.VPS_HOST != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Desplegar en el VPS vía SSH
+        if: env.HAS_VPS == 'true'
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
