@@ -44,7 +44,24 @@ while ($true) {
                 if ($url -ne $prev) {
                     Set-Content -Path $urlPath -Value $url
                     Write-Host "[$(Get-Date -Format HH:mm:ss)] ⚠ URL NUEVA: $url"
-                    Write-Host "   Actualiza en Pages: npx wrangler pages secret put API_ORIGIN --project-name pos-inventario-feroz-d"
+                    $frontend = Join-Path $PSScriptRoot "..\frontend"
+                    if (Test-Path (Join-Path $frontend "wrangler.toml")) {
+                        Write-Host "   Re-desplegando Pages con la nueva API_ORIGIN..."
+                        Push-Location $frontend
+                        try {
+                            npm run build 2>&1 | Out-Null
+                            $url | npx wrangler pages secret put API_ORIGIN --project-name pos-inventario-feroz-d 2>&1 | Out-Null
+                            npx wrangler pages deploy --project-name pos-inventario-feroz-d 2>&1 | Out-Null
+                            Write-Host "   Pages actualizado correctamente."
+                        } catch {
+                            Write-Host "   No se pudo actualizar Pages: $($_.Exception.Message)"
+                        } finally {
+                            Pop-Location
+                        }
+                    } else {
+                        Write-Host "   Actualiza Pages manualmente con:"
+                        Write-Host "   echo \"$url\" | npx wrangler pages secret put API_ORIGIN --project-name pos-inventario-feroz-d"
+                    }
                 }
             }
         }
